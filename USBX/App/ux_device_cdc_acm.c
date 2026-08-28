@@ -136,7 +136,7 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
-    UCHAR message[] = "Hello from Cardiac Sensor!\r\n";
+	static UCHAR message[] = "Hello from Cardiac Sensor!\r\n";
     ULONG actual_length;
     UINT status;
 
@@ -144,17 +144,21 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
     while (1)
     {
-        if (g_cdc_acm != UX_NULL)
+        if ((g_cdc_acm != UX_NULL)&&
+                (_ux_system_slave->ux_system_slave_device.ux_slave_device_state ==
+                 UX_DEVICE_CONFIGURED))
         {
+        	actual_length = 0;
             status = ux_device_class_cdc_acm_write(
                 g_cdc_acm,
                 message,
                 sizeof(message) - 1,
                 &actual_length);
 
-            if (status != UX_SUCCESS)
+            if ((status != UX_SUCCESS) || (actual_length != (sizeof(message) - 1U)))
             {
-                /* Transmission error */
+            	/* Let USBX finish a disconnect/reconfiguration before retrying. */
+            	                tx_thread_sleep(10);
             }
 
             tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);

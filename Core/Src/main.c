@@ -299,7 +299,17 @@ static void MX_USB_OTG_HS_PCD_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USB_OTG_HS_Init 2 */
+  /* RX FIFO */
+  HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_HS, 0x200);
 
+  /* TX FIFO 0 : EP0 Control */
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_HS, 0, 0x10);
+
+  /* TX FIFO 1 : EP1 CDC Command IN (0x81) */
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_HS, 1, 0x10);
+
+  /* TX FIFO 2 : EP2 CDC Data IN (0x82) */
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_HS, 2, 0x80);
   /* USER CODE END USB_OTG_HS_Init 2 */
 
 }
