@@ -1,0 +1,5 @@
+../USBX/App/app_usbx_device.c:75:6:MX_USBX_Device_Init	72	static
+../USBX/App/app_usbx_device.c:166:6:MX_USBX_Device_Stack_Init	80	static
+../USBX/App/app_usbx_device.c:257:13:app_ux_device_thread_entry	24	static
+../USBX/App/app_usbx_device.c:306:6:MX_USBX_Device_Stack_DeInit	16	static
+../USBX/App/app_usbx_device.c:346:13:USBD_ChangeFunction	24	static
