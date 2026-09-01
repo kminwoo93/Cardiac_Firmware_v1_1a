@@ -53,8 +53,8 @@ extern PCD_HandleTypeDef           hpcd_USB_OTG_HS;
 extern UX_SLAVE_CLASS_CDC_ACM *g_cdc_acm;
 static TX_THREAD ux_cdc_read_thread;
 static TX_THREAD ux_cdc_write_thread;
-#define UX_CDC_READ_THREAD_STACK_SIZE   1024
-#define UX_CDC_WRITE_THREAD_STACK_SIZE  1024
+#define UX_CDC_READ_THREAD_STACK_SIZE   2048
+#define UX_CDC_WRITE_THREAD_STACK_SIZE  2048
 #define UX_CDC_READ_THREAD_PRIO   20
 #define UX_CDC_WRITE_THREAD_PRIO  20
 /* USER CODE END PV */
@@ -193,18 +193,15 @@ UINT MX_USBX_Device_Stack_Init(void)
   language_id_framework = USBD_Get_Language_Id_Framework(&language_id_framework_length);
 
   /* Install the device portion of USBX */
-
-  ret = ux_device_stack_initialize(device_framework_high_speed,
-                                   device_framework_hs_length,
-                                   device_framework_full_speed,
-                                   device_framework_fs_length,
-                                   string_framework,
-                                   string_framework_length,
-                                   language_id_framework,
-                                   language_id_framework_length,
-                                   USBD_ChangeFunction);
-
-  if (ret != UX_SUCCESS)
+  if (ux_device_stack_initialize(device_framework_high_speed,
+                                 device_framework_hs_length,
+                                 device_framework_full_speed,
+                                 device_framework_fs_length,
+                                 string_framework,
+                                 string_framework_length,
+                                 language_id_framework,
+                                 language_id_framework_length,
+                                 USBD_ChangeFunction) != UX_SUCCESS)
   {
     /* USER CODE BEGIN USBX_DEVICE_INITIALIZE_ERROR */
 
@@ -212,6 +209,7 @@ UINT MX_USBX_Device_Stack_Init(void)
 
     /* USER CODE END USBX_DEVICE_INITIALIZE_ERROR */
   }
+
   /* Initialize the cdc acm class parameters for the device */
   cdc_acm_parameter.ux_slave_class_cdc_acm_instance_activate   = USBD_CDC_ACM_Activate;
   cdc_acm_parameter.ux_slave_class_cdc_acm_instance_deactivate = USBD_CDC_ACM_Deactivate;

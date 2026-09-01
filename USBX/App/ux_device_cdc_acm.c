@@ -23,7 +23,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ads1292r.h"
+#include "main.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -136,38 +138,63 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
-	static UCHAR message[] = "Hello from Cardiac Sensor!\r\n";
-    ULONG actual_length;
-    UINT status;
+	UCHAR usb_buffer[64];
 
-    TX_PARAMETER_NOT_USED(thread_input);
+	    uint8_t ecg_raw[9];
+	    int32_t ch1;
+	    int32_t ch2;
 
-    while (1)
-    {
-        if ((g_cdc_acm != UX_NULL)&&
-                (_ux_system_slave->ux_system_slave_device.ux_slave_device_state ==
-                 UX_DEVICE_CONFIGURED))
-        {
-        	actual_length = 0;
-            status = ux_device_class_cdc_acm_write(
-                g_cdc_acm,
-                message,
-                sizeof(message) - 1,
-                &actual_length);
+	    ULONG actual_length;
+	    UINT status;
+	    int length;
 
-            if ((status != UX_SUCCESS) || (actual_length != (sizeof(message) - 1U)))
-            {
-            	/* Let USBX finish a disconnect/reconfiguration before retrying. */
-            	                tx_thread_sleep(10);
-            }
+	    TX_PARAMETER_NOT_USED(thread_input);
 
-            tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
-        }
-        else
-        {
-            tx_thread_sleep(10);
-        }
-    }
+	    while (1)
+	    {
+	        if ((g_cdc_acm != UX_NULL) &&
+	            (_ux_system_slave->ux_system_slave_device.ux_slave_device_state ==
+	             UX_DEVICE_CONFIGURED))
+	        {
+	            if (HAL_GPIO_ReadPin(DRDY_GPIO_Port, DRDY_Pin) == GPIO_PIN_RESET)
+	            {
+	                ADS1292R_ReadData(ecg_raw);
+
+	                ch1 = ADS1292R_Convert24Bit(
+	                    ecg_raw[3],
+	                    ecg_raw[4],
+	                    ecg_raw[5]);
+
+	                ch2 = ADS1292R_Convert24Bit(
+	                    ecg_raw[6],
+	                    ecg_raw[7],
+	                    ecg_raw[8]);
+
+	                length = snprintf((char *)usb_buffer,
+	                                  sizeof(usb_buffer),
+	                                  "%ld,%ld\r\n",
+	                                  (long)ch1,
+	                                  (long)ch2);
+
+	                actual_length = 0;
+
+	                status = ux_device_class_cdc_acm_write(
+	                    g_cdc_acm,
+	                    usb_buffer,
+	                    length,
+	                    &actual_length);
+
+	                if (status != UX_SUCCESS)
+	                {
+	                    tx_thread_sleep(1);
+	                }
+	            }
+	        }
+	        else
+	        {
+	            tx_thread_sleep(10);
+	        }
+	    }
 }
 
 

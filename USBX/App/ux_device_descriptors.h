@@ -260,11 +260,11 @@ uint16_t USBD_Get_Configuration_Number(uint8_t class_type, uint8_t interface_typ
 
 /* USER CODE END Private_defines */
 
-#define USBD_VID                                      0x0483
-#define USBD_PID                                      0x5740
+#define USBD_VID                                      1155
+#define USBD_PID                                      22336
 #define USBD_LANGID_STRING                            1033
 #define USBD_MANUFACTURER_STRING                      "STMicroelectronics"
-#define USBD_PRODUCT_STRING                           "Cardiac Monitor"
+#define USBD_PRODUCT_STRING                           "STM32 USB Device"
 #define USBD_SERIAL_NUMBER                            "000000000001"
 
 #define USB_DESC_TYPE_INTERFACE                       0x04U

@@ -1,0 +1,8 @@
+../Core/Src/ads1292r.c:14:13:ADS1292R_Select	8	static
+../Core/Src/ads1292r.c:21:13:ADS1292R_Deselect	8	static
+../Core/Src/ads1292r.c:28:6:ADS1292R_SendCommand	16	static
+../Core/Src/ads1292r.c:40:9:ADS1292R_ReadRegister	24	static
+../Core/Src/ads1292r.c:70:6:ADS1292R_WriteRegister	24	static
+../Core/Src/ads1292r.c:97:6:ADS1292R_HardwareReset	8	static
+../Core/Src/ads1292r.c:120:6:ADS1292R_ReadData	16	static
+../Core/Src/ads1292r.c:132:9:ADS1292R_Convert24Bit	24	static

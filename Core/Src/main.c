@@ -22,7 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ads1292r.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,6 +44,8 @@
 
 I2C_HandleTypeDef hi2c1;
 
+SPI_HandleTypeDef hspi1;
+
 PCD_HandleTypeDef hpcd_USB_OTG_HS;
 
 /* USER CODE BEGIN PV */
@@ -57,6 +59,7 @@ static void MX_GPIO_Init(void);
 static void MX_ICACHE_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USB_OTG_HS_PCD_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -74,7 +77,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+	volatile uint8_t ecg_raw[9] = {0};
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -101,7 +104,48 @@ int main(void)
   MX_ICACHE_Init();
   MX_I2C1_Init();
   MX_USB_OTG_HS_PCD_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
+  uint8_t ads_id = 0;
+  volatile uint8_t config1_before = 0;
+  volatile uint8_t config1_after  = 0;
+  volatile int32_t ch1 = 0;
+  volatile int32_t ch2 = 0;
+
+  ADS1292R_HardwareReset();
+
+  ADS1292R_SendCommand(ADS1292R_CMD_SDATAC);
+
+
+
+  /* 500 samples/second */
+  ADS1292R_WriteRegister(ADS1292R_REG_CONFIG1, 0x02);
+  /* Internal reference + internal test signal */
+  ADS1292R_WriteRegister(ADS1292R_REG_CONFIG2, 0xA3);
+  /* Normal electrode input */
+  ADS1292R_WriteRegister(ADS1292R_REG_CH1SET, 0x00);
+  ADS1292R_WriteRegister(ADS1292R_REG_CH2SET, 0x00);
+  /* CH1 inputs participate in Right Leg Drive */
+  ADS1292R_WriteRegister(ADS1292R_REG_RLD_SENS, 0x03);
+  /* Verify */
+  volatile uint8_t config1_check = 0;
+  volatile uint8_t config2_check = 0;
+  volatile uint8_t ch1set_check  = 0;
+  volatile uint8_t ch2set_check  = 0;
+  /* Start conversion */
+  ADS1292R_SendCommand(ADS1292R_CMD_SDATAC);
+  HAL_Delay(1);
+
+
+  config1_check = ADS1292R_ReadRegister(ADS1292R_REG_CONFIG1);
+  config2_check = ADS1292R_ReadRegister(ADS1292R_REG_CONFIG2);
+  ch1set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH1SET);
+  ch2set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH2SET);
+
+  HAL_Delay(10);
+  /* Continuous read mode */
+  ADS1292R_SendCommand(ADS1292R_CMD_RDATAC);
+  HAL_Delay(1);
 
   /* USER CODE END 2 */
 
@@ -111,8 +155,10 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+
   while (1)
   {
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -270,6 +316,63 @@ static void MX_ICACHE_Init(void)
 }
 
 /**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  SPI_AutonomousModeConfTypeDef HAL_SPI_AutonomousMode_Cfg_Struct = {0};
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 0x7;
+  hspi1.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
+  hspi1.Init.NSSPolarity = SPI_NSS_POLARITY_LOW;
+  hspi1.Init.FifoThreshold = SPI_FIFO_THRESHOLD_01DATA;
+  hspi1.Init.MasterSSIdleness = SPI_MASTER_SS_IDLENESS_00CYCLE;
+  hspi1.Init.MasterInterDataIdleness = SPI_MASTER_INTERDATA_IDLENESS_00CYCLE;
+  hspi1.Init.MasterReceiverAutoSusp = SPI_MASTER_RX_AUTOSUSP_DISABLE;
+  hspi1.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_DISABLE;
+  hspi1.Init.IOSwap = SPI_IO_SWAP_DISABLE;
+  hspi1.Init.ReadyMasterManagement = SPI_RDY_MASTER_MANAGEMENT_INTERNALLY;
+  hspi1.Init.ReadyPolarity = SPI_RDY_POLARITY_HIGH;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  HAL_SPI_AutonomousMode_Cfg_Struct.TriggerState = SPI_AUTO_MODE_DISABLE;
+  HAL_SPI_AutonomousMode_Cfg_Struct.TriggerSelection = SPI_GRP1_GPDMA_CH0_TCF_TRG;
+  HAL_SPI_AutonomousMode_Cfg_Struct.TriggerPolarity = SPI_TRIG_POLARITY_RISING;
+  if (HAL_SPIEx_SetConfigAutonomousMode(&hspi1, &HAL_SPI_AutonomousMode_Cfg_Struct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
+}
+
+/**
   * @brief USB_OTG_HS Initialization Function
   * @param None
   * @retval None
@@ -358,14 +461,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(CS_ADS_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PA5 PA6 PA7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF5_SPI1;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pin : DRDY_Pin */
   GPIO_InitStruct.Pin = DRDY_Pin;
