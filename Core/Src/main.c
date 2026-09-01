@@ -77,7 +77,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-	volatile uint8_t ecg_raw[9] = {0};
+volatile uint8_t ecg_raw[9] = {0};
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -113,39 +113,59 @@ int main(void)
   volatile int32_t ch2 = 0;
 
   ADS1292R_HardwareReset();
-
+  HAL_Delay(10);
   ADS1292R_SendCommand(ADS1292R_CMD_SDATAC);
-
-
+  HAL_Delay(10);
 
   /* 500 samples/second */
   ADS1292R_WriteRegister(ADS1292R_REG_CONFIG1, 0x02);
+  HAL_Delay(10);
   /* Internal reference + internal test signal */
-  ADS1292R_WriteRegister(ADS1292R_REG_CONFIG2, 0xA3);
-  /* Normal electrode input */
+  ADS1292R_WriteRegister(ADS1292R_REG_CONFIG2, 0xA0);
+  /* Allow internal reference to stabilize */
+  HAL_Delay(150);
+  /* CH1: gain 6, normal electrode input */
   ADS1292R_WriteRegister(ADS1292R_REG_CH1SET, 0x00);
+  HAL_Delay(10);
+  /* CH2: power down and internally short */
   ADS1292R_WriteRegister(ADS1292R_REG_CH2SET, 0x00);
-  /* CH1 inputs participate in Right Leg Drive */
-  ADS1292R_WriteRegister(ADS1292R_REG_RLD_SENS, 0x03);
+  HAL_Delay(10);
+  /* RLD buffer ON, derived from CH1P and CH1N */
+  ADS1292R_WriteRegister(ADS1292R_REG_RLD_SENS, 0x00);
+  HAL_Delay(10);
+  /*
+   * RESP2 = 0x01
+   * Internal RLD reference: (AVDD + AVSS) / 2
+   * Respiration calibration disabled
+   */
+  ADS1292R_WriteRegister(ADS1292R_REG_RESP2,0x03);
+  HAL_Delay(10);
+
   /* Verify */
   volatile uint8_t config1_check = 0;
   volatile uint8_t config2_check = 0;
   volatile uint8_t ch1set_check  = 0;
   volatile uint8_t ch2set_check  = 0;
-  /* Start conversion */
-  ADS1292R_SendCommand(ADS1292R_CMD_SDATAC);
-  HAL_Delay(1);
+  volatile uint8_t resp2_readback;
+  volatile uint8_t rld_readback;
 
-
+  resp2_readback =
+      ADS1292R_ReadRegister(ADS1292R_REG_RESP2);
+  HAL_Delay(10);
+  rld_readback =
+      ADS1292R_ReadRegister(ADS1292R_REG_RLD_SENS);
+  HAL_Delay(10);
   config1_check = ADS1292R_ReadRegister(ADS1292R_REG_CONFIG1);
   config2_check = ADS1292R_ReadRegister(ADS1292R_REG_CONFIG2);
   ch1set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH1SET);
   ch2set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH2SET);
 
+  /* Start conversion */
+  ADS1292R_SendCommand(ADS1292R_CMD_START);
   HAL_Delay(10);
   /* Continuous read mode */
   ADS1292R_SendCommand(ADS1292R_CMD_RDATAC);
-  HAL_Delay(1);
+  HAL_Delay(10);
 
   /* USER CODE END 2 */
 
@@ -340,7 +360,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -464,7 +484,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : DRDY_Pin */
   GPIO_InitStruct.Pin = DRDY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(DRDY_GPIO_Port, &GPIO_InitStruct);
 
@@ -482,9 +502,6 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(PWDN_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 1, 0);
-  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-
   HAL_NVIC_SetPriority(EXTI1_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(EXTI1_IRQn);
 
