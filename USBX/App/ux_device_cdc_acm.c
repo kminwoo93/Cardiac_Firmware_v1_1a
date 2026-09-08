@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "ads1292r.h"
 #include "main.h"
+#include <limits.h>
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -141,8 +142,10 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
     UCHAR usb_buffer[64];
     uint8_t ecg_raw[9];
 
-    int32_t ch1;
-    int32_t ch2;
+    int32_t ch2_raw;
+    float ch2_filtered;
+    int32_t ch2_filtered_int;
+    ADS1292R_CH2FilterState ch2_filter;
 
     uint32_t start_tick = 0;
     uint32_t timestamp_ms;
@@ -157,6 +160,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
     GPIO_PinState current_drdy;
 
     TX_PARAMETER_NOT_USED(thread_input);
+    ADS1292R_CH2FilterInit(&ch2_filter);
 
     while (1)
     {
@@ -180,9 +184,10 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
         if (stream_started == 0)
         {
             static const UCHAR csv_header[] =
-                "timestamp_ms,ch1,ch2\r\n";
+                "timestamp,ch2_raw,ch2_filtered\r\n";
 
             start_tick = HAL_GetTick();
+            ADS1292R_CH2FilterInit(&ch2_filter);
             previous_drdy =
                 HAL_GPIO_ReadPin(DRDY_GPIO_Port, DRDY_Pin);
 
@@ -236,15 +241,27 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                 continue;
             }
 
-            ch1 = ADS1292R_Convert24Bit(
-                ecg_raw[3],
-                ecg_raw[4],
-                ecg_raw[5]);
-
-            ch2 = ADS1292R_Convert24Bit(
+            ch2_raw = ADS1292R_Convert24Bit(
                 ecg_raw[6],
                 ecg_raw[7],
                 ecg_raw[8]);
+
+            ch2_filtered = ADS1292R_ProcessCH2Sample(
+                &ch2_filter,
+                ch2_raw);
+
+            if (ch2_filtered > (float)INT32_MAX)
+            {
+                ch2_filtered_int = INT32_MAX;
+            }
+            else if (ch2_filtered < (float)INT32_MIN)
+            {
+                ch2_filtered_int = INT32_MIN;
+            }
+            else
+            {
+                ch2_filtered_int = (int32_t)ch2_filtered;
+            }
 
             timestamp_ms = HAL_GetTick() - start_tick;
 
@@ -253,8 +270,8 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                 sizeof(usb_buffer),
                 "%lu,%ld,%ld\r\n",
                 (unsigned long)timestamp_ms,
-                (long)ch1,
-                (long)ch2);
+                (long)ch2_raw,
+                (long)ch2_filtered_int);
 
             /*
              * Check that snprintf succeeded and did not overflow.

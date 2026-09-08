@@ -8,6 +8,7 @@
 
 #include "ads1292r.h"
 #include "main.h"
+#include <string.h>
 
 extern SPI_HandleTypeDef hspi1;
 
@@ -146,4 +147,66 @@ int32_t ADS1292R_Convert24Bit(uint8_t b0,
     }
 
     return value;
+}
+
+static float ADS1292R_ApplyBiquad(ADS1292R_BiquadState *state,
+                                  float input)
+{
+    float output;
+
+    output = (state->b0 * input)
+           + (state->b1 * state->x1)
+           + (state->b2 * state->x2)
+           - (state->a1 * state->y1)
+           - (state->a2 * state->y2);
+
+    state->x2 = state->x1;
+    state->x1 = input;
+    state->y2 = state->y1;
+    state->y1 = output;
+
+    return output;
+}
+
+void ADS1292R_CH2FilterInit(ADS1292R_CH2FilterState *filter)
+{
+    memset(filter, 0, sizeof(*filter));
+
+    /* Second-order Butterworth high-pass, fc = 0.5 Hz, fs = 500 Hz. */
+    filter->high_pass.b0 =  0.995566972018f;
+    filter->high_pass.b1 = -1.991133944040f;
+    filter->high_pass.b2 =  0.995566972018f;
+    filter->high_pass.a1 = -1.991114292200f;
+    filter->high_pass.a2 =  0.991153595869f;
+
+    /* Second-order Butterworth low-pass, fc = 40 Hz, fs = 500 Hz. */
+    filter->low_pass.b0 = 0.0461318020933f;
+    filter->low_pass.b1 = 0.0922636041866f;
+    filter->low_pass.b2 = 0.0461318020933f;
+    filter->low_pass.a1 = -1.3072850288500f;
+    filter->low_pass.a2 = 0.4918122372230f;
+}
+
+float ADS1292R_ProcessCH2Sample(ADS1292R_CH2FilterState *filter,
+                               int32_t ch2_raw)
+{
+    float input = (float)ch2_raw;
+    float high_passed;
+
+    /*
+     * Prime only the high-pass input delays with the electrode DC level.
+     * Its output delays and every low-pass delay remain zero, avoiding a
+     * large start-up step while preserving every raw sample for logging.
+     * This function is also the single insertion point for a future input
+     * quality/outlier check; no amplitude rejection is performed here.
+     */
+    if (filter->initialized == 0U)
+    {
+        filter->high_pass.x1 = input;
+        filter->high_pass.x2 = input;
+        filter->initialized = 1U;
+    }
+
+    high_passed = ADS1292R_ApplyBiquad(&filter->high_pass, input);
+    return ADS1292R_ApplyBiquad(&filter->low_pass, high_passed);
 }
