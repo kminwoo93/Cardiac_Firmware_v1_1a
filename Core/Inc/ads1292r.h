@@ -11,6 +11,26 @@
 #include "main.h"
 #include <stdint.h>
 
+typedef struct
+{
+    float b0;
+    float b1;
+    float b2;
+    float a1;
+    float a2;
+    float x1;
+    float x2;
+    float y1;
+    float y2;
+} ADS1292R_BiquadState;
+
+typedef struct
+{
+    ADS1292R_BiquadState high_pass;
+    ADS1292R_BiquadState low_pass;
+    uint8_t initialized;
+} ADS1292R_CH2FilterState;
+
 /*
  * ADS1292R Command Definitions
  */
@@ -64,5 +84,10 @@ void ADS1292R_ReadData(uint8_t *data);
 int32_t ADS1292R_Convert24Bit(uint8_t b0,
                               uint8_t b1,
                               uint8_t b2);
+
+void ADS1292R_CH2FilterInit(ADS1292R_CH2FilterState *filter);
+
+float ADS1292R_ProcessCH2Sample(ADS1292R_CH2FilterState *filter,
+                               int32_t ch2_raw);
 
 #endif /* INC_ADS1292R_H_ */
