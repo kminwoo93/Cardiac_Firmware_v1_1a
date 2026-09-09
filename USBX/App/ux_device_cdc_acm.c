@@ -139,7 +139,7 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
-    UCHAR usb_buffer[64];
+    UCHAR usb_buffer[96];
     uint8_t ecg_raw[9];
 
     int32_t ch2_raw;
@@ -149,6 +149,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
     uint32_t start_tick = 0;
     uint32_t timestamp_ms;
+    uint32_t sample_counter = 0;
 
     ULONG actual_length;
     UINT status;
@@ -184,9 +185,10 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
         if (stream_started == 0)
         {
             static const UCHAR csv_header[] =
-                "timestamp,ch2_raw,ch2_filtered\r\n";
+                "timestamp,sample_counter,ads1292r_raw,ch2_raw,ch2_filtered\r\n";
 
             start_tick = HAL_GetTick();
+            sample_counter = 0;
             ADS1292R_CH2FilterInit(&ch2_filter);
             previous_drdy =
                 HAL_GPIO_ReadPin(DRDY_GPIO_Port, DRDY_Pin);
@@ -234,6 +236,13 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
             ADS1292R_ReadData(ecg_raw);
 
             /*
+             * Count every acquired frame, including a frame that later fails
+             * the status check or USB transmission.  A gap in the host-side
+             * sequence therefore exposes missing or rejected data.
+             */
+            sample_counter++;
+
+            /*
              * Valid ADS1292R status begins with binary 1100.
              */
             if ((ecg_raw[0] & 0xF0U) != 0xC0U)
@@ -268,8 +277,18 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
             length = snprintf(
                 (char *)usb_buffer,
                 sizeof(usb_buffer),
-                "%lu,%ld,%ld\r\n",
+                "%lu,%lu,%02X%02X%02X%02X%02X%02X%02X%02X%02X,%ld,%ld\r\n",
                 (unsigned long)timestamp_ms,
+                (unsigned long)sample_counter,
+                (unsigned int)ecg_raw[0],
+                (unsigned int)ecg_raw[1],
+                (unsigned int)ecg_raw[2],
+                (unsigned int)ecg_raw[3],
+                (unsigned int)ecg_raw[4],
+                (unsigned int)ecg_raw[5],
+                (unsigned int)ecg_raw[6],
+                (unsigned int)ecg_raw[7],
+                (unsigned int)ecg_raw[8],
                 (long)ch2_raw,
                 (long)ch2_filtered_int);
 
