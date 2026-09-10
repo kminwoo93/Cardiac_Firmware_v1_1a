@@ -25,7 +25,6 @@
 /* USER CODE BEGIN Includes */
 #include "ads1292r.h"
 #include "main.h"
-#include <limits.h>
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -139,12 +138,15 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
-    UCHAR usb_buffer[96];
+    UCHAR usb_buffer[160];
     uint8_t ecg_raw[9];
 
     int32_t ch2_raw;
-    float ch2_filtered;
-    int32_t ch2_filtered_int;
+    ADS1292R_CH2FilterOutput ch2_output;
+    int32_t ch2_bandpass_int;
+    int32_t ch2_notch_int;
+    int32_t ch2_bandpass_notch_int;
+    int32_t ch2_all_filter_int;
     ADS1292R_CH2FilterState ch2_filter;
 
     uint32_t start_tick = 0;
@@ -185,7 +187,8 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
         if (stream_started == 0)
         {
             static const UCHAR csv_header[] =
-                "timestamp,sample_counter,ads1292r_raw,ch2_raw,ch2_filtered\r\n";
+                "timestamp,sample_counter,ads1292r_raw,ch2_raw,"
+                "ch2_bandpass,ch2_notch,ch2_bandpass_notch,ch2_all_filter\r\n";
 
             start_tick = HAL_GetTick();
             sample_counter = 0;
@@ -255,29 +258,23 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                 ecg_raw[7],
                 ecg_raw[8]);
 
-            ch2_filtered = ADS1292R_ProcessCH2Sample(
+            (void)ADS1292R_ProcessCH2Sample(
                 &ch2_filter,
-                ch2_raw);
+                ch2_raw,
+                &ch2_output);
 
-            if (ch2_filtered > (float)INT32_MAX)
-            {
-                ch2_filtered_int = INT32_MAX;
-            }
-            else if (ch2_filtered < (float)INT32_MIN)
-            {
-                ch2_filtered_int = INT32_MIN;
-            }
-            else
-            {
-                ch2_filtered_int = (int32_t)ch2_filtered;
-            }
+            ch2_bandpass_int = (int32_t)ch2_output.bandpass;
+            ch2_notch_int = (int32_t)ch2_output.notch;
+            ch2_bandpass_notch_int = (int32_t)ch2_output.bandpass_notch;
+            ch2_all_filter_int = (int32_t)ch2_output.all_filter;
 
             timestamp_ms = HAL_GetTick() - start_tick;
 
             length = snprintf(
                 (char *)usb_buffer,
                 sizeof(usb_buffer),
-                "%lu,%lu,%02X%02X%02X%02X%02X%02X%02X%02X%02X,%ld,%ld\r\n",
+                "%lu,%lu,%02X%02X%02X%02X%02X%02X%02X%02X%02X,"
+                "%ld,%ld,%ld,%ld,%ld\r\n",
                 (unsigned long)timestamp_ms,
                 (unsigned long)sample_counter,
                 (unsigned int)ecg_raw[0],
@@ -290,7 +287,10 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                 (unsigned int)ecg_raw[7],
                 (unsigned int)ecg_raw[8],
                 (long)ch2_raw,
-                (long)ch2_filtered_int);
+                (long)ch2_bandpass_int,
+                (long)ch2_notch_int,
+                (long)ch2_bandpass_notch_int,
+                (long)ch2_all_filter_int);
 
             /*
              * Check that snprintf succeeded and did not overflow.

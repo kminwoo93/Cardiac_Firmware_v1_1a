@@ -76,9 +76,13 @@ def main():
     for frequency in FREQUENCIES:
         samples = [1_000_000.0 * math.sin(2.0 * math.pi * frequency * n / FS)
                    for n in range(5000)]
-        output = apply_biquad(LOW_PASS, apply_biquad(HIGH_PASS,
-                              apply_biquad(NOTCH, samples)))
-        assert all(math.isfinite(value) for value in output)
+        all_filter = apply_biquad(LOW_PASS, apply_biquad(HIGH_PASS,
+                                  apply_biquad(NOTCH, samples)))
+        bandpass_notch = apply_biquad(
+            NOTCH,
+            apply_biquad(LOW_PASS, apply_biquad(HIGH_PASS, samples)))
+        assert all(math.isfinite(value) for value in all_filter)
+        assert all(math.isfinite(value) for value in bandpass_notch)
 
 
 if __name__ == "__main__":

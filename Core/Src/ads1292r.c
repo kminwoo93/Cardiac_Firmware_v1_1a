@@ -192,14 +192,20 @@ void ADS1292R_CH2FilterInit(ADS1292R_CH2FilterState *filter)
     filter->low_pass.b2 = 0.0461318020933f;
     filter->low_pass.a1 = -1.3072850288500f;
     filter->low_pass.a2 = 0.4918122372230f;
+
+    filter->bandpass_high_pass = filter->high_pass;
+    filter->bandpass_low_pass = filter->low_pass;
+    filter->bandpass_notch = filter->notch;
 }
 
 float ADS1292R_ProcessCH2Sample(ADS1292R_CH2FilterState *filter,
-                               int32_t ch2_raw)
+                               int32_t ch2_raw,
+                               ADS1292R_CH2FilterOutput *output)
 {
     float input = (float)ch2_raw;
     float notched;
     float high_passed;
+    float bandpass_high_passed;
 
     /*
      * Prime the unity-DC-gain notch at steady state, then prime only the
@@ -215,10 +221,26 @@ float ADS1292R_ProcessCH2Sample(ADS1292R_CH2FilterState *filter,
         filter->notch.y2 = input;
         filter->high_pass.x1 = input;
         filter->high_pass.x2 = input;
+        filter->bandpass_high_pass.x1 = input;
+        filter->bandpass_high_pass.x2 = input;
         filter->initialized = 1U;
     }
 
     notched = ADS1292R_ApplyBiquad(&filter->notch, input);
     high_passed = ADS1292R_ApplyBiquad(&filter->high_pass, notched);
-    return ADS1292R_ApplyBiquad(&filter->low_pass, high_passed);
+    bandpass_high_passed = ADS1292R_ApplyBiquad(
+        &filter->bandpass_high_pass,
+        input);
+
+    output->notch = notched;
+    output->bandpass = ADS1292R_ApplyBiquad(
+        &filter->bandpass_low_pass,
+        bandpass_high_passed);
+    output->all_filter = ADS1292R_ApplyBiquad(
+        &filter->low_pass,
+        high_passed);
+    output->bandpass_notch = ADS1292R_ApplyBiquad(
+        &filter->bandpass_notch,
+        output->bandpass);
+    return output->all_filter;
 }
