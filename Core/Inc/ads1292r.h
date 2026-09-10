@@ -26,10 +26,22 @@ typedef struct
 
 typedef struct
 {
+    ADS1292R_BiquadState notch;
     ADS1292R_BiquadState high_pass;
     ADS1292R_BiquadState low_pass;
+    ADS1292R_BiquadState bandpass_high_pass;
+    ADS1292R_BiquadState bandpass_low_pass;
+    ADS1292R_BiquadState bandpass_notch;
     uint8_t initialized;
 } ADS1292R_CH2FilterState;
+
+typedef struct
+{
+    float bandpass;
+    float notch;
+    float bandpass_notch;
+    float all_filter;
+} ADS1292R_CH2FilterOutput;
 
 /*
  * ADS1292R Command Definitions
@@ -88,6 +100,7 @@ int32_t ADS1292R_Convert24Bit(uint8_t b0,
 void ADS1292R_CH2FilterInit(ADS1292R_CH2FilterState *filter);
 
 float ADS1292R_ProcessCH2Sample(ADS1292R_CH2FilterState *filter,
-                               int32_t ch2_raw);
+                               int32_t ch2_raw,
+                               ADS1292R_CH2FilterOutput *output);
 
 #endif /* INC_ADS1292R_H_ */

@@ -172,6 +172,13 @@ void ADS1292R_CH2FilterInit(ADS1292R_CH2FilterState *filter)
 {
     memset(filter, 0, sizeof(*filter));
 
+    /* Second-order notch, f0 = 60 Hz, Q = 30, fs = 500 Hz. */
+    filter->notch.b0 =  0.98758894f;
+    filter->notch.b1 = -1.43984271f;
+    filter->notch.b2 =  0.98758894f;
+    filter->notch.a1 = -1.43984271f;
+    filter->notch.a2 =  0.97517788f;
+
     /* Second-order Butterworth high-pass, fc = 0.5 Hz, fs = 500 Hz. */
     filter->high_pass.b0 =  0.995566972018f;
     filter->high_pass.b1 = -1.991133944040f;
@@ -185,28 +192,55 @@ void ADS1292R_CH2FilterInit(ADS1292R_CH2FilterState *filter)
     filter->low_pass.b2 = 0.0461318020933f;
     filter->low_pass.a1 = -1.3072850288500f;
     filter->low_pass.a2 = 0.4918122372230f;
+
+    filter->bandpass_high_pass = filter->high_pass;
+    filter->bandpass_low_pass = filter->low_pass;
+    filter->bandpass_notch = filter->notch;
 }
 
 float ADS1292R_ProcessCH2Sample(ADS1292R_CH2FilterState *filter,
-                               int32_t ch2_raw)
+                               int32_t ch2_raw,
+                               ADS1292R_CH2FilterOutput *output)
 {
     float input = (float)ch2_raw;
+    float notched;
     float high_passed;
+    float bandpass_high_passed;
 
     /*
-     * Prime only the high-pass input delays with the electrode DC level.
-     * Its output delays and every low-pass delay remain zero, avoiding a
+     * Prime the unity-DC-gain notch at steady state, then prime only the
+     * high-pass input delays with the electrode DC level.  The high-pass
+     * output delays and every low-pass delay remain zero.  This avoids a
      * large start-up step while preserving every raw sample for logging.
-     * This function is also the single insertion point for a future input
-     * quality/outlier check; no amplitude rejection is performed here.
      */
     if (filter->initialized == 0U)
     {
+        filter->notch.x1 = input;
+        filter->notch.x2 = input;
+        filter->notch.y1 = input;
+        filter->notch.y2 = input;
         filter->high_pass.x1 = input;
         filter->high_pass.x2 = input;
+        filter->bandpass_high_pass.x1 = input;
+        filter->bandpass_high_pass.x2 = input;
         filter->initialized = 1U;
     }
 
-    high_passed = ADS1292R_ApplyBiquad(&filter->high_pass, input);
-    return ADS1292R_ApplyBiquad(&filter->low_pass, high_passed);
+    notched = ADS1292R_ApplyBiquad(&filter->notch, input);
+    high_passed = ADS1292R_ApplyBiquad(&filter->high_pass, notched);
+    bandpass_high_passed = ADS1292R_ApplyBiquad(
+        &filter->bandpass_high_pass,
+        input);
+
+    output->notch = notched;
+    output->bandpass = ADS1292R_ApplyBiquad(
+        &filter->bandpass_low_pass,
+        bandpass_high_passed);
+    output->all_filter = ADS1292R_ApplyBiquad(
+        &filter->low_pass,
+        high_passed);
+    output->bandpass_notch = ADS1292R_ApplyBiquad(
+        &filter->bandpass_notch,
+        output->bandpass);
+    return output->all_filter;
 }
