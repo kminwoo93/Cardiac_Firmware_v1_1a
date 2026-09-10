@@ -125,21 +125,21 @@ volatile uint8_t ecg_raw[9] = {0};
   /* Allow internal reference to stabilize */
   HAL_Delay(150);
   /* CH1: gain 6, normal electrode input */
-  ADS1292R_WriteRegister(ADS1292R_REG_CH1SET, 0x00);
+  ADS1292R_WriteRegister(ADS1292R_REG_CH1SET, 0x02);
   HAL_Delay(10);
   /* CH2: power down and internally short */
   ADS1292R_WriteRegister(ADS1292R_REG_CH2SET, 0x00);
   HAL_Delay(10);
-  /* RLD buffer ON, derived from CH1P and CH1N */
-  ADS1292R_WriteRegister(ADS1292R_REG_RLD_SENS, 0x00);
+  ADS1292R_WriteRegister(ADS1292R_REG_RESP1,0x02);
   HAL_Delay(10);
-  /*
-   * RESP2 = 0x01
-   * Internal RLD reference: (AVDD + AVSS) / 2
-   * Respiration calibration disabled
-   */
   ADS1292R_WriteRegister(ADS1292R_REG_RESP2,0x03);
   HAL_Delay(10);
+  ADS1292R_WriteRegister(ADS1292R_REG_LOFF_SENS, 0x00);
+  HAL_Delay(10);
+  /* RLD buffer ON, derived from CH1P and CH1N */
+  ADS1292R_WriteRegister(ADS1292R_REG_RLD_SENS, 0x2C);
+  HAL_Delay(10);
+
 
   /* Verify */
   volatile uint8_t config1_check = 0;
