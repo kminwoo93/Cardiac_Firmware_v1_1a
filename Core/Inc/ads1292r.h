@@ -26,6 +26,7 @@ typedef struct
 
 typedef struct
 {
+    ADS1292R_BiquadState notch;
     ADS1292R_BiquadState high_pass;
     ADS1292R_BiquadState low_pass;
     uint8_t initialized;
