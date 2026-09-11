@@ -1,5 +1,5 @@
-../USBX/App/ux_device_cdc_acm.c:68:6:USBD_CDC_ACM_Activate	16	static
-../USBX/App/ux_device_cdc_acm.c:83:6:USBD_CDC_ACM_Deactivate	16	static
-../USBX/App/ux_device_cdc_acm.c:99:6:USBD_CDC_ACM_ParameterChange	16	static
-../USBX/App/ux_device_cdc_acm.c:109:6:usbx_cdc_acm_read_thread_entry	88	static
-../USBX/App/ux_device_cdc_acm.c:140:6:usbx_cdc_acm_write_thread_entry	328	static
+../USBX/App/ux_device_cdc_acm.c:67:6:USBD_CDC_ACM_Activate	16	static
+../USBX/App/ux_device_cdc_acm.c:82:6:USBD_CDC_ACM_Deactivate	16	static
+../USBX/App/ux_device_cdc_acm.c:98:6:USBD_CDC_ACM_ParameterChange	16	static
+../USBX/App/ux_device_cdc_acm.c:108:6:usbx_cdc_acm_read_thread_entry	88	static
+../USBX/App/ux_device_cdc_acm.c:139:6:usbx_cdc_acm_write_thread_entry	576	static

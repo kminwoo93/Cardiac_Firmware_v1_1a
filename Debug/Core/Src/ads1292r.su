@@ -7,5 +7,5 @@
 ../Core/Src/ads1292r.c:121:6:ADS1292R_ReadData	16	static
 ../Core/Src/ads1292r.c:133:9:ADS1292R_Convert24Bit	24	static
 ../Core/Src/ads1292r.c:152:14:ADS1292R_ApplyBiquad	24	static
-../Core/Src/ads1292r.c:171:6:ADS1292R_CH2FilterInit	16	static
-../Core/Src/ads1292r.c:190:7:ADS1292R_ProcessCH2Sample	24	static
+../Core/Src/ads1292r.c:171:6:ADS1292R_CH2FilterInit	24	static
+../Core/Src/ads1292r.c:201:7:ADS1292R_ProcessCH2Sample	40	static
