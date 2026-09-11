@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ads1292r.h"
+#include "ads1292r_acquisition.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/

@@ -1,57 +1,15 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file    app_threadx.c
-  * @author  MCD Application Team
-  * @brief   ThreadX applicative file
-  ******************************************************************************
-    * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-
-/* Includes ------------------------------------------------------------------*/
-#include "app_threadx.h"
-
-/* Private includes ----------------------------------------------------------*/
-/* USER CODE BEGIN Includes */
 #include "ads1292r_acquisition.h"
+#include "ads1292r.h"
+#include "main.h"
 
-/* USER CODE END Includes */
-
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
 #define ADS_ACQUISITION_STACK_SIZE  2048U
 #define ADS_ACQUISITION_PRIORITY    5U
 #define ADS_RING_CAPACITY           512U
-#define ADS_USB_BATCH_SIZE          10U
 #define ADS_BATCH_READY_FLAG        0x01U
 
 _Static_assert(sizeof(ADS1292R_Record) == 40U,
                "Unexpected ADS1292R_Record ABI layout");
 
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
-/* USER CODE BEGIN PV */
 extern TIM_HandleTypeDef htim2;
 
 volatile uint32_t ads_drdy_count;
@@ -90,52 +48,39 @@ static uint32_t ads_pending_drdy_counter;
 static uint32_t ads_timestamp_previous;
 static uint64_t ads_timestamp_wrap_base;
 
-/* USER CODE END PV */
-
-/* Private function prototypes -----------------------------------------------*/
-/* USER CODE BEGIN PFP */
 static VOID ADS1292R_AcquisitionThread(ULONG thread_input);
 static void ADS1292R_RingPush(const ADS1292R_Record *record);
 
-/* USER CODE END PFP */
-
-/**
-  * @brief  Application ThreadX Initialization.
-  * @param memory_ptr: memory pointer
-  * @retval int
-  */
-UINT App_ThreadX_Init(VOID *memory_ptr)
+UINT ADS1292R_AcquisitionInit(VOID *memory_ptr)
 {
-  UINT ret = TX_SUCCESS;
-  /* USER CODE BEGIN App_ThreadX_MEM_POOL */
+  UCHAR *stack;
+  TX_BYTE_POOL *byte_pool = (TX_BYTE_POOL *)memory_ptr;
 
-  /* USER CODE END App_ThreadX_MEM_POOL */
-  /* USER CODE BEGIN App_ThreadX_Init */
-  ret = ADS1292R_AcquisitionInit(memory_ptr);
-  /* USER CODE END App_ThreadX_Init */
-
-  return ret;
+  if (tx_semaphore_create(&ads_acquisition_semaphore, "ADS DRDY", 0U) != TX_SUCCESS)
+  {
+    return TX_SEMAPHORE_ERROR;
+  }
+  if (tx_event_flags_create(&ads_buffer_events, "ADS records") != TX_SUCCESS)
+  {
+    return TX_GROUP_ERROR;
+  }
+  if (tx_byte_allocate(byte_pool, (VOID **)&stack,
+                       ADS_ACQUISITION_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
+  {
+    return TX_POOL_ERROR;
+  }
+  if (tx_thread_create(&ads_acquisition_thread, "ADS1292R Acquisition",
+                       ADS1292R_AcquisitionThread, 0U, stack,
+                       ADS_ACQUISITION_STACK_SIZE, ADS_ACQUISITION_PRIORITY,
+                       ADS_ACQUISITION_PRIORITY, TX_NO_TIME_SLICE,
+                       TX_AUTO_START) != TX_SUCCESS)
+  {
+    return TX_THREAD_ERROR;
+  }
+  ads_timestamp_previous = __HAL_TIM_GET_COUNTER(&htim2);
+  ads_runtime_ready = 1U;
+  return TX_SUCCESS;
 }
-
-  /**
-  * @brief  Function that implements the kernel's initialization.
-  * @param  None
-  * @retval None
-  */
-void MX_ThreadX_Init(void)
-{
-  /* USER CODE BEGIN Before_Kernel_Start */
-
-  /* USER CODE END Before_Kernel_Start */
-
-  tx_kernel_enter();
-
-  /* USER CODE BEGIN Kernel_Start_Error */
-
-  /* USER CODE END Kernel_Start_Error */
-}
-
-/* USER CODE BEGIN 1 */
 
 uint32_t ADS1292R_ProfileNow(void)
 {
@@ -206,7 +151,7 @@ static void ADS1292R_RingPush(const ADS1292R_Record *record)
   ads_ring[ads_ring_head] = *record;
   ads_ring_head = (ads_ring_head + 1U) % ADS_RING_CAPACITY;
   ads_ring_count++;
-  batch_ready = (ads_ring_count >= ADS_USB_BATCH_SIZE) ? 1U : 0U;
+  batch_ready = (ads_ring_count >= ADS1292R_USB_BATCH_SIZE) ? 1U : 0U;
   TX_RESTORE
 
   if (batch_ready != 0U)
@@ -319,7 +264,7 @@ void ADS1292R_USB_Deactivated(void)
   (void)tx_event_flags_set(&ads_buffer_events, ADS_BATCH_READY_FLAG, TX_OR);
 }
 
-UINT ADS1292R_WaitAndPopBatch(ADS1292R_Record records[10])
+UINT ADS1292R_WaitAndPopBatch(ADS1292R_Record records[ADS1292R_USB_BATCH_SIZE])
 {
   ULONG actual_flags;
   uint32_t i;
@@ -331,15 +276,15 @@ UINT ADS1292R_WaitAndPopBatch(ADS1292R_Record records[10])
     (void)tx_event_flags_get(&ads_buffer_events, ADS_BATCH_READY_FLAG,
                              TX_OR_CLEAR, &actual_flags, TX_WAIT_FOREVER);
     TX_DISABLE
-    if (ads_ring_count >= ADS_USB_BATCH_SIZE)
+    if (ads_ring_count >= ADS1292R_USB_BATCH_SIZE)
     {
-      for (i = 0U; i < ADS_USB_BATCH_SIZE; ++i)
+      for (i = 0U; i < ADS1292R_USB_BATCH_SIZE; ++i)
       {
         records[i] = ads_ring[ads_ring_tail];
         ads_ring_tail = (ads_ring_tail + 1U) % ADS_RING_CAPACITY;
       }
-      ads_ring_count -= ADS_USB_BATCH_SIZE;
-      more_ready = (ads_ring_count >= ADS_USB_BATCH_SIZE) ? 1U : 0U;
+      ads_ring_count -= ADS1292R_USB_BATCH_SIZE;
+      more_ready = (ads_ring_count >= ADS1292R_USB_BATCH_SIZE) ? 1U : 0U;
       TX_RESTORE
       if (more_ready != 0U)
       {
@@ -352,4 +297,3 @@ UINT ADS1292R_WaitAndPopBatch(ADS1292R_Record records[10])
   }
 }
 
-/* USER CODE END 1 */

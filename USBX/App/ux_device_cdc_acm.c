@@ -24,7 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ads1292r.h"
-#include "app_threadx.h"
+#include "ads1292r_acquisition.h"
 #include "main.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -147,7 +147,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
     static const UCHAR csv_header[] =
         "sample_counter,timestamp_us,status_hex,ch1_raw,ch2_raw,ch2_filtered\r\n";
-    ADS1292R_Record batch[10];
+    ADS1292R_Record batch[ADS1292R_USB_BATCH_SIZE];
     UCHAR usb_buffer[1024];
     UX_SLAVE_CLASS_CDC_ACM *cdc;
     ULONG actual_length;
@@ -212,7 +212,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
         started = ADS1292R_ProfileNow();
         used = 0U;
-        for (i = 0U; i < 10U; ++i)
+        for (i = 0U; i < ADS1292R_USB_BATCH_SIZE; ++i)
         {
             length = snprintf((char *)&usb_buffer[used],
                               sizeof(usb_buffer) - used,
