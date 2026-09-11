@@ -23,6 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "ads1292r_acquisition.h"
 
 /* USER CODE END Includes */
 
@@ -63,6 +64,7 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
 
   /* USER CODE END App_ThreadX_MEM_POOL */
   /* USER CODE BEGIN App_ThreadX_Init */
+  ret = ADS1292R_AcquisitionInit(memory_ptr);
   /* USER CODE END App_ThreadX_Init */
 
   return ret;

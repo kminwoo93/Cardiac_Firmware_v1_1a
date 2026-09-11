@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ads1292r.h"
+#include "ads1292r_acquisition.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -110,6 +111,10 @@ volatile uint8_t ecg_raw[9] = {0};
   MX_SPI1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  if (HAL_TIM_Base_Start(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   uint8_t ads_id = 0;
   volatile uint8_t config1_before = 0;
   volatile uint8_t config1_after  = 0;
@@ -563,6 +568,14 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == DRDY_Pin)
+  {
+    ADS1292R_DRDY_EXTI_Callback();
+  }
+}
 
 /* USER CODE END 4 */
 
