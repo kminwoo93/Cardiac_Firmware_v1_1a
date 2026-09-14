@@ -160,12 +160,12 @@ volatile uint8_t ecg_raw[9] = {0};
   ch1set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH1SET);
   ch2set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH2SET);
 
-  /* Start conversion */
-  ADS1292R_SendCommand(ADS1292R_CMD_START);
-  HAL_Delay(10);
-  /* Continuous read mode */
-  ADS1292R_SendCommand(ADS1292R_CMD_RDATAC);
-  HAL_Delay(10);
+//  /* Start conversion */
+//  ADS1292R_SendCommand(ADS1292R_CMD_START);
+//  HAL_Delay(10);
+//  /* Continuous read mode */
+//  ADS1292R_SendCommand(ADS1292R_CMD_RDATAC);
+//  HAL_Delay(10);
 
   /* USER CODE END 2 */
 
@@ -484,7 +484,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : DRDY_Pin */
   GPIO_InitStruct.Pin = DRDY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(DRDY_GPIO_Port, &GPIO_InitStruct);
 
@@ -502,6 +502,9 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(PWDN_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+
   HAL_NVIC_SetPriority(EXTI1_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(EXTI1_IRQn);
 
