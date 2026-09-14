@@ -91,7 +91,7 @@ void ADS1292R_WriteRegister(uint8_t address, uint8_t value);
 
 void ADS1292R_HardwareReset(void);
 
-HAL_StatusTypeDef ADS1292R_ReadData(uint8_t *data);
+void ADS1292R_ReadData(uint8_t *data);
 
 int32_t ADS1292R_Convert24Bit(uint8_t b0,
                               uint8_t b1,

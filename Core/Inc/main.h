@@ -63,7 +63,6 @@ void Error_Handler(void);
 #define CS_ADS_GPIO_Port GPIOA
 #define DRDY_Pin GPIO_PIN_0
 #define DRDY_GPIO_Port GPIOB
-#define DRDY_EXTI_IRQn EXTI0_IRQn
 #define STM_INT1_Pin GPIO_PIN_1
 #define STM_INT1_GPIO_Port GPIOB
 #define STM_INT1_EXTI_IRQn EXTI1_IRQn

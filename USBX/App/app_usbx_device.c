@@ -50,11 +50,11 @@ static TX_THREAD ux_device_app_thread;
 extern PCD_HandleTypeDef           hpcd_USB_OTG_HS;
 
 /* USER CODE BEGIN PV */
-extern UX_SLAVE_CLASS_CDC_ACM * volatile g_cdc_acm;
+extern UX_SLAVE_CLASS_CDC_ACM *g_cdc_acm;
 static TX_THREAD ux_cdc_read_thread;
 static TX_THREAD ux_cdc_write_thread;
 #define UX_CDC_READ_THREAD_STACK_SIZE   2048
-#define UX_CDC_WRITE_THREAD_STACK_SIZE  4096 /* batch + float snprintf headroom */
+#define UX_CDC_WRITE_THREAD_STACK_SIZE  2048
 #define UX_CDC_READ_THREAD_PRIO   20
 #define UX_CDC_WRITE_THREAD_PRIO  20
 /* USER CODE END PV */

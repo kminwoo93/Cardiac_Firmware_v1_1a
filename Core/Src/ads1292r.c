@@ -118,15 +118,16 @@ void ADS1292R_HardwareReset(void)
 	       HAL_Delay(10);
 }
 
-HAL_StatusTypeDef ADS1292R_ReadData(uint8_t *data)
+void ADS1292R_ReadData(uint8_t *data)
 {
-    HAL_StatusTypeDef status;
-
     ADS1292R_Select();
-    status = HAL_SPI_Receive(&hspi1, data, 9U, 1U);
-    ADS1292R_Deselect();
 
-    return status;
+    HAL_SPI_Receive(&hspi1,
+                    data,
+                    9,
+                    HAL_MAX_DELAY);
+
+    ADS1292R_Deselect();
 }
 
 int32_t ADS1292R_Convert24Bit(uint8_t b0,
