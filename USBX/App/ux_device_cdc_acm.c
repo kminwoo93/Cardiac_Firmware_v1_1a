@@ -36,7 +36,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define ECG_USB_BATCH_SAMPLES    16U
-#define ECG_USB_BATCH_BUFFER_SIZE 1024U
+#define ECG_USB_BATCH_BUFFER_SIZE 2048U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -192,7 +192,9 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	        if (stream_started == 0U)
 	        {
 	            static const UCHAR csv_header[] =
-	                "timestamp_ms,sample_counter,ch1_raw,ch2_raw\r\n";
+	            		"timestamp_ms,sample_counter,ch1_raw,ch2_raw,"
+	            		"ch2_bandpass,ch2_notch,"
+	            		"ch2_bandpass_notch,ch2_all_filter\r\n";
 
 	            actual_length = 0;
 
@@ -245,13 +247,17 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	             * Append one CSV row to the batch buffer.
 	             */
 	            line_length = snprintf(
-	                (char *)&ecg_usb_batch_buffer[batch_length],
-	                ECG_USB_BATCH_BUFFER_SIZE - batch_length,
-	                "%lu,%lu,%ld,%ld\r\n",
-	                (unsigned long)sample.timestamp_ms,
-	                (unsigned long)sample.sample_counter,
-	                (long)sample.ch1_raw,
-	                (long)sample.ch2_raw);
+	            	    (char *)&ecg_usb_batch_buffer[batch_length],
+	            	    ECG_USB_BATCH_BUFFER_SIZE - batch_length,
+	            	    "%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
+	            	    (unsigned long)sample.timestamp_ms,
+	            	    (unsigned long)sample.sample_counter,
+	            	    (long)sample.ch1_raw,
+	            	    (long)sample.ch2_raw,
+	            	    (long)sample.ch2_bandpass,
+	            	    (long)sample.ch2_notch,
+	            	    (long)sample.ch2_bandpass_notch,
+	            	    (long)sample.ch2_all_filter);
 
 	            /*
 	             * Check snprintf result and remaining buffer space.

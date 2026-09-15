@@ -1,5 +1,5 @@
 ../Drivers/CMSIS/Include/core_cm33.h:2481:22:__NVIC_ClearPendingIRQ	2
 ../Core/Src/app_threadx.c:82:6:App_ThreadX_Init	5
 ../Core/Src/app_threadx.c:143:6:ecg_acquisition_thread_entry	4
-../Core/Src/app_threadx.c:240:6:MX_ThreadX_Init	1
-../Core/Src/app_threadx.c:254:6:HAL_GPIO_EXTI_Falling_Callback	3
+../Core/Src/app_threadx.c:276:6:MX_ThreadX_Init	1
+../Core/Src/app_threadx.c:290:6:HAL_GPIO_EXTI_Falling_Callback	3

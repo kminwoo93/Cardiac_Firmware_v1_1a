@@ -39,8 +39,14 @@ typedef struct
 {
     uint32_t sample_counter;
     uint32_t timestamp_ms;
+
     int32_t ch1_raw;
     int32_t ch2_raw;
+
+    int32_t ch2_bandpass;
+    int32_t ch2_notch;
+    int32_t ch2_bandpass_notch;
+    int32_t ch2_all_filter;
 } ECG_Sample;
 /* USER CODE END ET */
 
@@ -55,7 +61,7 @@ typedef struct
 
 /* USER CODE BEGIN PD */
 #define ECG_QUEUE_CAPACITY       128U
-#define ECG_QUEUE_MESSAGE_SIZE   4U
+#define ECG_QUEUE_MESSAGE_SIZE   8U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/

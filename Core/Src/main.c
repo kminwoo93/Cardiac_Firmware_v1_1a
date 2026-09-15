@@ -161,7 +161,7 @@ int main(void)
   ch2set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH2SET);
 
   /* Start conversion */
-  ADS1292R_SendCommand(ADS1292R_CMD_START);
+   ADS1292R_SendCommand(ADS1292R_CMD_START);
   HAL_Delay(10);
   /* Continuous read mode */
   ADS1292R_SendCommand(ADS1292R_CMD_RDATAC);

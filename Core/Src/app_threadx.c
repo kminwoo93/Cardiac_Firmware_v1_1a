@@ -147,8 +147,13 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 
   /* USER CODE BEGIN ecg_acquisition_thread_entry */
 	ECG_Sample sample;
+
+	ADS1292R_CH2FilterState ch2_filter;
+	ADS1292R_CH2FilterOutput ch2_output;
+
 	uint32_t sample_counter = 0;
 	uint32_t start_tick;
+
 	TX_PARAMETER_NOT_USED(thread_input);
 
 	uint8_t ecg_raw[9];
@@ -164,12 +169,16 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 	ecg_queue_send_count = 0;
 	ecg_queue_drop_count = 0;
 	ecg_queue_last_status = TX_SUCCESS;
-
+	/*Filter initialization*/
+	ADS1292R_CH2FilterInit(&ch2_filter);
 	sample_counter = 0;
 	start_tick = HAL_GetTick();
 	/* ThreadX 실행 전에 쌓인 DRDY pending flag 제거 */
 	  __HAL_GPIO_EXTI_CLEAR_IT(DRDY_Pin);
 	  NVIC_ClearPendingIRQ(EXTI0_IRQn);
+
+
+
 
 	  while (1)
 	  {
@@ -188,6 +197,9 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    	        ecg_valid_frame_count++;
 		    	        sample_counter++;
 
+		    	        /*
+		    	         * Convert the two 24-bit ADC channels.
+		    	         */
 		    	        ecg_ch1_raw = ADS1292R_Convert24Bit(
 		    	            ecg_raw[3],
 		    	            ecg_raw[4],
@@ -197,34 +209,58 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    	            ecg_raw[6],
 		    	            ecg_raw[7],
 		    	            ecg_raw[8]);
-		    	        /*
-		    	         * Build one queue message.
-		    	         */
-		    	       sample.sample_counter = sample_counter;
-		    	       sample.timestamp_ms =
-		    	       HAL_GetTick() - start_tick;
-		    	       sample.ch1_raw = ecg_ch1_raw;
-		    	       sample.ch2_raw = ecg_ch2_raw;
 
-		    	       /*
-		    	        * Never block acquisition when the queue is full.
-		    	        */
-		    	       ecg_queue_last_status =
-		    	       tx_queue_send(&ecg_sample_queue,
-		    	                     &sample,
-		    	                     TX_NO_WAIT);
-		    	       if (ecg_queue_last_status == TX_SUCCESS)
-		    	       {
-		    	           ecg_queue_send_count++;
-		    	       }
-		    	       else
-		    	       {
-		    	           ecg_queue_drop_count++;
-		    	       }
+		    	        /*
+		    	         * Process every valid CH2 sample.
+		    	         * Filter coefficients are designed for fs = 500 Hz.
+		    	         */
+		    	        (void)ADS1292R_ProcessCH2Sample(
+		    	            &ch2_filter,
+		    	            ecg_ch2_raw,
+		    	            &ch2_output);
+
+		    	        /*
+		    	         * Fill one queue message.
+		    	         */
+		    	        sample.sample_counter = sample_counter;
+		    	        sample.timestamp_ms = HAL_GetTick() - start_tick;
+
+		    	        sample.ch1_raw = ecg_ch1_raw;
+		    	        sample.ch2_raw = ecg_ch2_raw;
+
+		    	        sample.ch2_bandpass =
+		    	            (int32_t)ch2_output.bandpass;
+
+		    	        sample.ch2_notch =
+		    	            (int32_t)ch2_output.notch;
+
+		    	        sample.ch2_bandpass_notch =
+		    	            (int32_t)ch2_output.bandpass_notch;
+
+		    	        sample.ch2_all_filter =
+		    	            (int32_t)ch2_output.all_filter;
+
+		    	        /*
+		    	         * Do not block ECG acquisition when queue is full.
+		    	         */
+		    	        ecg_queue_last_status =
+		    	            tx_queue_send(
+		    	                &ecg_sample_queue,
+		    	                &sample,
+		    	                TX_NO_WAIT);
+
+		    	        if (ecg_queue_last_status == TX_SUCCESS)
+		    	        {
+		    	            ecg_queue_send_count++;
+		    	        }
+		    	        else
+		    	        {
+		    	            ecg_queue_drop_count++;
+		    	        }
 		    	    }
 		    	    else
 		    	    {
-		    	    	ecg_invalid_frame_count++;
+		    	        ecg_invalid_frame_count++;
 		    	    }
 		    }
 	  }
