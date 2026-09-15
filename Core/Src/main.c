@@ -160,12 +160,12 @@ volatile uint8_t ecg_raw[9] = {0};
   ch1set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH1SET);
   ch2set_check  = ADS1292R_ReadRegister(ADS1292R_REG_CH2SET);
 
-//  /* Start conversion */
-//  ADS1292R_SendCommand(ADS1292R_CMD_START);
-//  HAL_Delay(10);
-//  /* Continuous read mode */
-//  ADS1292R_SendCommand(ADS1292R_CMD_RDATAC);
-//  HAL_Delay(10);
+  /* Start conversion */
+  ADS1292R_SendCommand(ADS1292R_CMD_START);
+  HAL_Delay(10);
+  /* Continuous read mode */
+  ADS1292R_SendCommand(ADS1292R_CMD_RDATAC);
+  HAL_Delay(10);
 
   /* USER CODE END 2 */
 

@@ -41,7 +41,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+volatile uint32_t drdy_irq_count = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -170,7 +170,7 @@ void EXTI0_IRQHandler(void)
   /* USER CODE END EXTI0_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(DRDY_Pin);
   /* USER CODE BEGIN EXTI0_IRQn 1 */
-
+  drdy_irq_count++;
   /* USER CODE END EXTI0_IRQn 1 */
 }
 
