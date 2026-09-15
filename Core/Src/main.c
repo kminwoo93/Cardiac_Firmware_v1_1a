@@ -77,7 +77,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-volatile uint8_t ecg_raw[9] = {0};
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -124,10 +124,10 @@ volatile uint8_t ecg_raw[9] = {0};
   ADS1292R_WriteRegister(ADS1292R_REG_CONFIG2, 0xA0);
   /* Allow internal reference to stabilize */
   HAL_Delay(150);
-  /* CH1: gain 6, normal electrode input */
-  ADS1292R_WriteRegister(ADS1292R_REG_CH1SET, 0x02);
+  /* CH1: no use */
+  ADS1292R_WriteRegister(ADS1292R_REG_CH1SET, 0x81);
   HAL_Delay(10);
-  /* CH2: power down and internally short */
+  /* CH2: gain 6, normal electrode input */
   ADS1292R_WriteRegister(ADS1292R_REG_CH2SET, 0x00);
   HAL_Delay(10);
   ADS1292R_WriteRegister(ADS1292R_REG_RESP1,0x02);

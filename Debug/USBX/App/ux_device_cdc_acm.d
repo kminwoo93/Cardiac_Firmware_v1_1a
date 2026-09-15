@@ -8,7 +8,7 @@ USBX/App/ux_device_cdc_acm.o: ../USBX/App/ux_device_cdc_acm.c \
  ../Middlewares/ST/usbx/common/core/inc/ux_utility.h \
  ../Middlewares/ST/usbx/common/core/inc/ux_system.h \
  ../Middlewares/ST/usbx/common/usbx_device_classes/inc/ux_device_class_cdc_acm.h \
- ../Core/Inc/ads1292r.h ../Core/Inc/main.h \
+ ../Core/Inc/app_threadx.h ../Core/Inc/main.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h \
  ../Core/Inc/stm32u5xx_hal_conf.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_rcc.h \
@@ -42,8 +42,7 @@ USBX/App/ux_device_cdc_acm.o: ../USBX/App/ux_device_cdc_acm.c \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h \
- ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
- ../Core/Inc/main.h
+ ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h
 ../USBX/App/ux_device_cdc_acm.h:
 ../Middlewares/ST/usbx/common/core/inc/ux_api.h:
 ../Middlewares/ST/usbx/ports/generic/inc/ux_port.h:
@@ -54,7 +53,7 @@ USBX/App/ux_device_cdc_acm.o: ../USBX/App/ux_device_cdc_acm.c \
 ../Middlewares/ST/usbx/common/core/inc/ux_utility.h:
 ../Middlewares/ST/usbx/common/core/inc/ux_system.h:
 ../Middlewares/ST/usbx/common/usbx_device_classes/inc/ux_device_class_cdc_acm.h:
-../Core/Inc/ads1292r.h:
+../Core/Inc/app_threadx.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal.h:
 ../Core/Inc/stm32u5xx_hal_conf.h:
@@ -90,4 +89,3 @@ USBX/App/ux_device_cdc_acm.o: ../USBX/App/ux_device_cdc_acm.c \
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
-../Core/Inc/main.h:

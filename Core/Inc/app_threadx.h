@@ -30,12 +30,18 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdint.h>
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
+typedef struct
+{
+    uint32_t sample_counter;
+    uint32_t timestamp_ms;
+    int32_t ch1_raw;
+    int32_t ch2_raw;
+} ECG_Sample;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -48,7 +54,8 @@ extern "C" {
 #define TX_APP_THREAD_PRIO                      5
 
 /* USER CODE BEGIN PD */
-
+#define ECG_QUEUE_CAPACITY       128U
+#define ECG_QUEUE_MESSAGE_SIZE   4U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -78,7 +85,7 @@ void MX_ThreadX_Init(void);
 void ecg_acquisition_thread_entry(ULONG thread_input);
 
 /* USER CODE BEGIN EFP */
-
+extern TX_QUEUE ecg_sample_queue;
 /* USER CODE END EFP */
 
 /* USER CODE BEGIN 1 */

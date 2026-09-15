@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "main.h"
+#include "ads1292r.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,11 +46,27 @@
 TX_THREAD tx_app_thread;
 TX_SEMAPHORE tx_app_semaphore;
 /* USER CODE BEGIN PV */
+TX_QUEUE ecg_sample_queue;
+
+static ULONG ecg_queue_storage[
+    ECG_QUEUE_CAPACITY * ECG_QUEUE_MESSAGE_SIZE
+];
+
 extern volatile uint32_t drdy_irq_count;
 volatile uint32_t ecg_thread_wakeup_count = 0;
 volatile uint32_t semaphore_put_success_count = 0;
 volatile uint32_t semaphore_put_error_count = 0;
 volatile UINT semaphore_last_status = TX_SUCCESS;
+volatile uint8_t ecg_raw[9] = {0};
+volatile int32_t ecg_ch1_raw = 0;
+volatile int32_t ecg_ch2_raw = 0;
+
+volatile uint32_t ecg_valid_frame_count = 0;
+volatile uint32_t ecg_invalid_frame_count = 0;
+
+volatile uint32_t ecg_queue_send_count = 0;
+volatile uint32_t ecg_queue_drop_count = 0;
+volatile UINT ecg_queue_last_status = TX_SUCCESS;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,6 +110,27 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   }
 
   /* USER CODE BEGIN App_ThreadX_Init */
+  /*
+       * Create ECG sample queue.
+       *
+       * Message size is expressed in ULONG units:
+       * 4 ULONG = 16 bytes = sizeof(ECG_Sample).
+       */
+  if (sizeof(ECG_Sample) !=
+      (ECG_QUEUE_MESSAGE_SIZE * sizeof(ULONG)))
+  {
+      return TX_SIZE_ERROR;
+  }
+
+  if (tx_queue_create(&ecg_sample_queue,
+                      "ecg_sample_queue",
+                      ECG_QUEUE_MESSAGE_SIZE,
+                      ecg_queue_storage,
+                      sizeof(ecg_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
   /* USER CODE END App_ThreadX_Init */
 
   return ret;
@@ -104,24 +142,90 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   */
 void ecg_acquisition_thread_entry(ULONG thread_input)
 {
+
+
+
   /* USER CODE BEGIN ecg_acquisition_thread_entry */
+	ECG_Sample sample;
+	uint32_t sample_counter = 0;
+	uint32_t start_tick;
+	TX_PARAMETER_NOT_USED(thread_input);
+
+	uint8_t ecg_raw[9];
+
+
 	drdy_irq_count = 0;
 	ecg_thread_wakeup_count = 0;
 	semaphore_put_success_count = 0;
 	semaphore_put_error_count = 0;
+
+	ecg_valid_frame_count = 0;
+	ecg_invalid_frame_count = 0;
+	ecg_queue_send_count = 0;
+	ecg_queue_drop_count = 0;
+	ecg_queue_last_status = TX_SUCCESS;
+
+	sample_counter = 0;
+	start_tick = HAL_GetTick();
 	/* ThreadX 실행 전에 쌓인 DRDY pending flag 제거 */
 	  __HAL_GPIO_EXTI_CLEAR_IT(DRDY_Pin);
 	  NVIC_ClearPendingIRQ(EXTI0_IRQn);
-
-	  /* 이제 EXTI0 interrupt 시작 */
-	  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
 	  while (1)
 	  {
 		    if (tx_semaphore_get(&tx_app_semaphore,
 		                         TX_WAIT_FOREVER) == TX_SUCCESS)
 		    {
-		        ecg_thread_wakeup_count++;
+		    	ecg_thread_wakeup_count++;
+
+		    	    ADS1292R_ReadData((uint8_t *)ecg_raw);
+
+		    	    /*
+		    	     * Valid ADS1292R status starts with 1100.
+		    	     */
+		    	    if ((ecg_raw[0] & 0xF0U) == 0xC0U)
+		    	    {
+		    	        ecg_valid_frame_count++;
+		    	        sample_counter++;
+
+		    	        ecg_ch1_raw = ADS1292R_Convert24Bit(
+		    	            ecg_raw[3],
+		    	            ecg_raw[4],
+		    	            ecg_raw[5]);
+
+		    	        ecg_ch2_raw = ADS1292R_Convert24Bit(
+		    	            ecg_raw[6],
+		    	            ecg_raw[7],
+		    	            ecg_raw[8]);
+		    	        /*
+		    	         * Build one queue message.
+		    	         */
+		    	       sample.sample_counter = sample_counter;
+		    	       sample.timestamp_ms =
+		    	       HAL_GetTick() - start_tick;
+		    	       sample.ch1_raw = ecg_ch1_raw;
+		    	       sample.ch2_raw = ecg_ch2_raw;
+
+		    	       /*
+		    	        * Never block acquisition when the queue is full.
+		    	        */
+		    	       ecg_queue_last_status =
+		    	       tx_queue_send(&ecg_sample_queue,
+		    	                     &sample,
+		    	                     TX_NO_WAIT);
+		    	       if (ecg_queue_last_status == TX_SUCCESS)
+		    	       {
+		    	           ecg_queue_send_count++;
+		    	       }
+		    	       else
+		    	       {
+		    	           ecg_queue_drop_count++;
+		    	       }
+		    	    }
+		    	    else
+		    	    {
+		    	    	ecg_invalid_frame_count++;
+		    	    }
 		    }
 	  }
 

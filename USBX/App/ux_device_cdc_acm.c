@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "ads1292r.h"
+#include "app_threadx.h"
 #include "main.h"
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -35,7 +35,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define ECG_USB_BATCH_SAMPLES    16U
+#define ECG_USB_BATCH_BUFFER_SIZE 1024U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +46,16 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+static UCHAR ecg_usb_batch_buffer[ECG_USB_BATCH_BUFFER_SIZE];
 
+volatile uint32_t usb_queue_receive_count = 0;
+volatile uint32_t usb_sample_send_count = 0;
+volatile uint32_t usb_batch_send_count = 0;
+volatile uint32_t usb_sample_error_count = 0;
+volatile uint32_t usb_batch_error_count = 0;
+
+volatile UINT usb_last_queue_status = TX_SUCCESS;
+volatile UINT usb_last_write_status = UX_SUCCESS;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -138,196 +148,174 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
-    UCHAR usb_buffer[160];
-    uint8_t ecg_raw[9];
+	ECG_Sample sample;
 
-    int32_t ch2_raw;
-    ADS1292R_CH2FilterOutput ch2_output;
-    int32_t ch2_bandpass_int;
-    int32_t ch2_notch_int;
-    int32_t ch2_bandpass_notch_int;
-    int32_t ch2_all_filter_int;
-    ADS1292R_CH2FilterState ch2_filter;
+	    ULONG actual_length;
+	    UINT status;
 
-    uint32_t start_tick = 0;
-    uint32_t timestamp_ms;
-    uint32_t sample_counter = 0;
+	    uint32_t batch_sample_count;
+	    uint32_t batch_length;
 
-    ULONG actual_length;
-    UINT status;
-    int length;
+	    int line_length;
 
-    uint8_t stream_started = 0;
+	    uint8_t stream_started = 0U;
 
-    GPIO_PinState previous_drdy = GPIO_PIN_SET;
-    GPIO_PinState current_drdy;
+	    TX_PARAMETER_NOT_USED(thread_input);
 
-    TX_PARAMETER_NOT_USED(thread_input);
-    ADS1292R_CH2FilterInit(&ch2_filter);
+	    usb_queue_receive_count = 0;
+	    usb_sample_send_count = 0;
+	    usb_batch_send_count = 0;
+	    usb_sample_error_count = 0;
+	    usb_batch_error_count = 0;
 
-    while (1)
-    {
-        /*
-         * Check whether USB CDC is connected and configured.
-         */
-        if ((g_cdc_acm == UX_NULL) ||
-            (_ux_system_slave->ux_system_slave_device
-                 .ux_slave_device_state != UX_DEVICE_CONFIGURED))
-        {
-            stream_started = 0;
-            previous_drdy = GPIO_PIN_SET;
+	    usb_last_queue_status = TX_SUCCESS;
+	    usb_last_write_status = UX_SUCCESS;
 
-            tx_thread_sleep(10);
-            continue;
-        }
+	    while (1)
+	    {
+	        /*
+	         * Wait until USB CDC is connected and configured.
+	         */
+	        if ((g_cdc_acm == UX_NULL) ||
+	            (_ux_system_slave->ux_system_slave_device
+	                 .ux_slave_device_state != UX_DEVICE_CONFIGURED))
+	        {
+	            stream_started = 0U;
 
-        /*
-         * Start a new stream after USB connection.
-         */
-        if (stream_started == 0)
-        {
-            static const UCHAR csv_header[] =
-                "timestamp,sample_counter,ads1292r_raw,ch2_raw,"
-                "ch2_bandpass,ch2_notch,ch2_bandpass_notch,ch2_all_filter\r\n";
+	            tx_thread_sleep(10);
+	            continue;
+	        }
 
-            start_tick = HAL_GetTick();
-            sample_counter = 0;
-            ADS1292R_CH2FilterInit(&ch2_filter);
-            previous_drdy =
-                HAL_GPIO_ReadPin(DRDY_GPIO_Port, DRDY_Pin);
+	        /*
+	         * Send CSV header once after USB connection.
+	         */
+	        if (stream_started == 0U)
+	        {
+	            static const UCHAR csv_header[] =
+	                "timestamp_ms,sample_counter,ch1_raw,ch2_raw\r\n";
 
-            actual_length = 0;
+	            actual_length = 0;
 
-            status = ux_device_class_cdc_acm_write(
-                g_cdc_acm,
-                (UCHAR *)csv_header,
-                (ULONG)(sizeof(csv_header) - 1U),
-                &actual_length);
+	            status = ux_device_class_cdc_acm_write(
+	                g_cdc_acm,
+	                (UCHAR *)csv_header,
+	                (ULONG)(sizeof(csv_header) - 1U),
+	                &actual_length);
 
-            if (status != UX_SUCCESS)
-            {
-                tx_thread_sleep(10);
-                continue;
-            }
+	            usb_last_write_status = status;
 
-            stream_started = 1;
-        }
+	            if (status != UX_SUCCESS)
+	            {
+	                usb_batch_error_count++;
 
-        /*
-         * Read the current DRDY state.
-         * ADS1292R DRDY is active-low.
-         */
-        current_drdy =
-            HAL_GPIO_ReadPin(DRDY_GPIO_Port, DRDY_Pin);
+	                tx_thread_sleep(10);
+	                continue;
+	            }
 
-        /*
-         * Detect a DRDY falling edge:
-         * previous HIGH and current LOW.
-         */
-        if ((previous_drdy == GPIO_PIN_SET) &&
-            (current_drdy == GPIO_PIN_RESET))
-        {
-            /*
-             * Save the current state before SPI and USB operations.
-             */
-            previous_drdy = GPIO_PIN_RESET;
+	            stream_started = 1U;
+	        }
 
-            /*
-             * Read one ADS1292R frame:
-             * status[3] + CH1[3] + CH2[3].
-             */
-            ADS1292R_ReadData(ecg_raw);
+	        /*
+	         * Start building a new USB batch.
+	         */
+	        batch_sample_count = 0U;
+	        batch_length = 0U;
 
-            /*
-             * Count every acquired frame, including a frame that later fails
-             * the status check or USB transmission.  A gap in the host-side
-             * sequence therefore exposes missing or rejected data.
-             */
-            sample_counter++;
+	        while (batch_sample_count < ECG_USB_BATCH_SAMPLES)
+	        {
+	            /*
+	             * Sleep until the next ECG sample is available.
+	             */
+	            status = tx_queue_receive(
+	                &ecg_sample_queue,
+	                &sample,
+	                TX_WAIT_FOREVER);
 
-            /*
-             * Valid ADS1292R status begins with binary 1100.
-             */
-            if ((ecg_raw[0] & 0xF0U) != 0xC0U)
-            {
-                continue;
-            }
+	            usb_last_queue_status = status;
 
-            ch2_raw = ADS1292R_Convert24Bit(
-                ecg_raw[6],
-                ecg_raw[7],
-                ecg_raw[8]);
+	            if (status != TX_SUCCESS)
+	            {
+	                usb_sample_error_count++;
+	                break;
+	            }
 
-            (void)ADS1292R_ProcessCH2Sample(
-                &ch2_filter,
-                ch2_raw,
-                &ch2_output);
+	            usb_queue_receive_count++;
 
-            ch2_bandpass_int = (int32_t)ch2_output.bandpass;
-            ch2_notch_int = (int32_t)ch2_output.notch;
-            ch2_bandpass_notch_int = (int32_t)ch2_output.bandpass_notch;
-            ch2_all_filter_int = (int32_t)ch2_output.all_filter;
+	            /*
+	             * Append one CSV row to the batch buffer.
+	             */
+	            line_length = snprintf(
+	                (char *)&ecg_usb_batch_buffer[batch_length],
+	                ECG_USB_BATCH_BUFFER_SIZE - batch_length,
+	                "%lu,%lu,%ld,%ld\r\n",
+	                (unsigned long)sample.timestamp_ms,
+	                (unsigned long)sample.sample_counter,
+	                (long)sample.ch1_raw,
+	                (long)sample.ch2_raw);
 
-            timestamp_ms = HAL_GetTick() - start_tick;
+	            /*
+	             * Check snprintf result and remaining buffer space.
+	             */
+	            if ((line_length <= 0) ||
+	                ((uint32_t)line_length >=
+	                 (ECG_USB_BATCH_BUFFER_SIZE - batch_length)))
+	            {
+	                usb_sample_error_count++;
+	                break;
+	            }
 
-            length = snprintf(
-                (char *)usb_buffer,
-                sizeof(usb_buffer),
-                "%lu,%lu,%02X%02X%02X%02X%02X%02X%02X%02X%02X,"
-                "%ld,%ld,%ld,%ld,%ld\r\n",
-                (unsigned long)timestamp_ms,
-                (unsigned long)sample_counter,
-                (unsigned int)ecg_raw[0],
-                (unsigned int)ecg_raw[1],
-                (unsigned int)ecg_raw[2],
-                (unsigned int)ecg_raw[3],
-                (unsigned int)ecg_raw[4],
-                (unsigned int)ecg_raw[5],
-                (unsigned int)ecg_raw[6],
-                (unsigned int)ecg_raw[7],
-                (unsigned int)ecg_raw[8],
-                (long)ch2_raw,
-                (long)ch2_bandpass_int,
-                (long)ch2_notch_int,
-                (long)ch2_bandpass_notch_int,
-                (long)ch2_all_filter_int);
+	            batch_length += (uint32_t)line_length;
+	            batch_sample_count++;
+	        }
 
-            /*
-             * Check that snprintf succeeded and did not overflow.
-             */
-            if ((length <= 0) ||
-                (length >= (int)sizeof(usb_buffer)))
-            {
-                continue;
-            }
+	        /*
+	         * Do not attempt a zero-length USB transfer.
+	         */
+	        if (batch_sample_count == 0U)
+	        {
+	            continue;
+	        }
 
-            actual_length = 0;
+	        /*
+	         * USB may have disconnected while collecting the batch.
+	         */
+	        if ((g_cdc_acm == UX_NULL) ||
+	            (_ux_system_slave->ux_system_slave_device
+	                 .ux_slave_device_state != UX_DEVICE_CONFIGURED))
+	        {
+	            usb_sample_error_count += batch_sample_count;
+	            stream_started = 0U;
+	            continue;
+	        }
 
-            status = ux_device_class_cdc_acm_write(
-                g_cdc_acm,
-                usb_buffer,
-                (ULONG)length,
-                &actual_length);
+	        actual_length = 0;
 
-            if (status != UX_SUCCESS)
-            {
-                tx_thread_sleep(1);
-            }
-        }
-        else
-        {
-            /*
-             * Update the DRDY state.
-             * This rearms detection after DRDY returns HIGH.
-             */
-            previous_drdy = current_drdy;
+	        /*
+	         * Send all 16 CSV rows with one USB write call.
+	         */
+	        status = ux_device_class_cdc_acm_write(
+	            g_cdc_acm,
+	            ecg_usb_batch_buffer,
+	            (ULONG)batch_length,
+	            &actual_length);
 
-            /*
-             * Allow other ThreadX threads to execute.
-             */
-            tx_thread_relinquish();
-        }
-    }
+	        usb_last_write_status = status;
+
+	        if ((status == UX_SUCCESS) &&
+	            (actual_length == (ULONG)batch_length))
+	        {
+	            usb_batch_send_count++;
+	            usb_sample_send_count += batch_sample_count;
+	        }
+	        else
+	        {
+	            usb_batch_error_count++;
+	            usb_sample_error_count += batch_sample_count;
+
+	            stream_started = 0U;
+	            tx_thread_sleep(1);
+	        }
+	    }
 }
 
 
