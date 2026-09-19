@@ -64,11 +64,13 @@ void Error_Handler(void);
 #define DRDY_Pin GPIO_PIN_0
 #define DRDY_GPIO_Port GPIOB
 #define DRDY_EXTI_IRQn EXTI0_IRQn
-#define STM_INT1_Pin GPIO_PIN_1
-#define STM_INT1_GPIO_Port GPIOB
-#define STM_INT1_EXTI_IRQn EXTI1_IRQn
 #define PWDN_Pin GPIO_PIN_2
 #define PWDN_GPIO_Port GPIOB
+#define ICM_CS_Pin GPIO_PIN_2
+#define ICM_CS_GPIO_Port GPIOD
+#define ICM_INT_Pin GPIO_PIN_5
+#define ICM_INT_GPIO_Port GPIOB
+#define ICM_INT_EXTI_IRQn EXTI5_IRQn
 #define I2C1_SCL_Pin GPIO_PIN_6
 #define I2C1_SCL_GPIO_Port GPIOB
 #define I2C1_SDA_Pin GPIO_PIN_7

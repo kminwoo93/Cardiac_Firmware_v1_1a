@@ -142,9 +142,6 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   */
 void ecg_acquisition_thread_entry(ULONG thread_input)
 {
-
-
-
   /* USER CODE BEGIN ecg_acquisition_thread_entry */
 	ECG_Sample sample;
 
@@ -185,6 +182,7 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    if (tx_semaphore_get(&tx_app_semaphore,
 		                         TX_WAIT_FOREVER) == TX_SUCCESS)
 		    {
+
 		    	ecg_thread_wakeup_count++;
 
 		    	    ADS1292R_ReadData((uint8_t *)ecg_raw);
@@ -248,6 +246,8 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    	                &ecg_sample_queue,
 		    	                &sample,
 		    	                TX_NO_WAIT);
+
+
 
 		    	        if (ecg_queue_last_status == TX_SUCCESS)
 		    	        {

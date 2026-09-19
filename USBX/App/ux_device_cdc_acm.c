@@ -296,6 +296,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
 	        actual_length = 0;
 
+
 	        /*
 	         * Send all 16 CSV rows with one USB write call.
 	         */
@@ -304,6 +305,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            ecg_usb_batch_buffer,
 	            (ULONG)batch_length,
 	            &actual_length);
+
 
 	        usb_last_write_status = status;
 
