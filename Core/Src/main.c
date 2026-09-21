@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ads1292r.h"
+#include "icm20948.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -114,6 +115,18 @@ int main(void)
   volatile uint8_t config1_after  = 0;
   volatile int32_t ch1 = 0;
   volatile int32_t ch2 = 0;
+//
+
+  volatile HAL_StatusTypeDef icm_init_status;
+
+  icm_init_status = ICM20948_Init();
+
+  if (icm_init_status != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+//
 
   ADS1292R_HardwareReset();
   HAL_Delay(10);

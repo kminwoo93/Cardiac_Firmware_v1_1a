@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "app_threadx.h"
 #include "main.h"
+#include "icm20948.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -36,7 +37,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define ECG_USB_BATCH_SAMPLES    16U
-#define ECG_USB_BATCH_BUFFER_SIZE 2048U
+#define ECG_USB_BATCH_BUFFER_SIZE 4096U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -149,7 +150,10 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
 	ECG_Sample sample;
-
+	//
+	ICM20948_AccelRaw imu_accel;
+	HAL_StatusTypeDef imu_read_status;
+	//
 	    ULONG actual_length;
 	    UINT status;
 
@@ -191,11 +195,11 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	         */
 	        if (stream_started == 0U)
 	        {
-	            static const UCHAR csv_header[] =
-	            		"timestamp_ms,sample_counter,ch1_raw,ch2_raw,"
-	            		"ch2_bandpass,ch2_notch,"
-	            		"ch2_bandpass_notch,ch2_all_filter\r\n";
-
+	        	static const UCHAR csv_header[] =
+	        	    "timestamp_ms,sample_counter,ch1_raw,ch2_raw,"
+	        	    "ch2_bandpass,ch2_notch,"
+	        	    "ch2_bandpass_notch,ch2_all_filter,"
+	        	    "accel_x_raw,accel_y_raw,accel_z_raw\r\n";
 	            actual_length = 0;
 
 	            status = ux_device_class_cdc_acm_write(
@@ -242,22 +246,36 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            }
 
 	            usb_queue_receive_count++;
+	            //
+	            imu_read_status = ICM20948_ReadAccelRaw(&imu_accel);
+
+	            if (imu_read_status != HAL_OK)
+	            {
+	                imu_accel.x = 0;
+	                imu_accel.y = 0;
+	                imu_accel.z = 0;
+	            }
+	            //
+
 
 	            /*
 	             * Append one CSV row to the batch buffer.
 	             */
 	            line_length = snprintf(
-	            	    (char *)&ecg_usb_batch_buffer[batch_length],
-	            	    ECG_USB_BATCH_BUFFER_SIZE - batch_length,
-	            	    "%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
-	            	    (unsigned long)sample.timestamp_ms,
-	            	    (unsigned long)sample.sample_counter,
-	            	    (long)sample.ch1_raw,
-	            	    (long)sample.ch2_raw,
-	            	    (long)sample.ch2_bandpass,
-	            	    (long)sample.ch2_notch,
-	            	    (long)sample.ch2_bandpass_notch,
-	            	    (long)sample.ch2_all_filter);
+	                (char *)&ecg_usb_batch_buffer[batch_length],
+	                ECG_USB_BATCH_BUFFER_SIZE - batch_length,
+	                "%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%d,%d,%d\r\n",
+	                (unsigned long)sample.timestamp_ms,
+	                (unsigned long)sample.sample_counter,
+	                (long)sample.ch1_raw,
+	                (long)sample.ch2_raw,
+	                (long)sample.ch2_bandpass,
+	                (long)sample.ch2_notch,
+	                (long)sample.ch2_bandpass_notch,
+	                (long)sample.ch2_all_filter,
+	                (int)imu_accel.x,
+	                (int)imu_accel.y,
+	                (int)imu_accel.z);
 
 	            /*
 	             * Check snprintf result and remaining buffer space.
