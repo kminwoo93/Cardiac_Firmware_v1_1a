@@ -36,7 +36,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define USB_BATCH_ECG_SAMPLES    16U
-#define SCG_USB_BATCH_SAMPLES    24U
+#define SCG_USB_BATCH_SAMPLES    20U
 #define USB_BATCH_BUFFER_SIZE    4096U
 /*
  * Do not remove a queue message unless enough buffer
@@ -303,15 +303,10 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            line_length = snprintf(
 	                (char *)&usb_batch_buffer[batch_length],
 	                USB_BATCH_BUFFER_SIZE - batch_length,
-	                "E,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,0,0,0\r\n",
+	                "E,%lu,%lu,%ld,0,0\r\n",
 	                (unsigned long)sample.timestamp_ms,
 	                (unsigned long)sample.sample_counter,
-	                (long)sample.ch1_raw,
-	                (long)sample.ch2_raw,
-	                (long)sample.ch2_bandpass,
-	                (long)sample.ch2_notch,
-	                (long)sample.ch2_bandpass_notch,
-	                (long)sample.ch2_all_filter);
+	                (long)sample.ch2_raw);
 
 	            if ((line_length <= 0) ||
 	                ((uint32_t)line_length >=
@@ -387,13 +382,12 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                line_length = snprintf(
 	                    (char *)&usb_batch_buffer[batch_length],
 	                    USB_BATCH_BUFFER_SIZE - batch_length,
-	                    "S,%lu,%lu,0,0,0,0,0,0,%d,%d,%d\r\n",
+	                    "S,%lu,%lu,%d,%d,%d\r\n",
 	                    (unsigned long)scg_sample.timestamp_ms,
 	                    (unsigned long)scg_sample.sample_counter,
 	                    (int)scg_sample.accel_x_raw,
 	                    (int)scg_sample.accel_y_raw,
 	                    (int)scg_sample.accel_z_raw);
-
 	                /*
 	                 * Check whether snprintf succeeded and the row fitted.
 	                 */
