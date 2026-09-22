@@ -45,7 +45,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 TX_THREAD tx_app_thread;
-TX_SEMAPHORE tx_app_semaphore;
 /* USER CODE BEGIN PV */
 TX_QUEUE ecg_sample_queue;
 TX_QUEUE scg_sample_queue;
@@ -80,10 +79,6 @@ static ULONG scg_timestamp_queue_storage[
 
 extern volatile uint32_t drdy_irq_count;
 volatile uint32_t ecg_thread_wakeup_count = 0;
-volatile uint32_t semaphore_put_success_count = 0;
-volatile uint32_t semaphore_put_error_count = 0;
-volatile UINT semaphore_last_status = TX_SUCCESS;
-volatile uint8_t ecg_raw[9] = {0};
 volatile int32_t ecg_ch1_raw = 0;
 volatile int32_t ecg_ch2_raw = 0;
 
@@ -104,16 +99,6 @@ volatile UINT scg_queue_last_status = TX_SUCCESS;
 TX_THREAD scg_acquisition_thread;
 
 /*
- * Counting semaphore used to transfer ICM Data Ready events
- * from the ISR to the SCG acquisition thread.
- */
-TX_SEMAPHORE scg_drdy_semaphore;
-
-/*
- * This becomes 1 only after scg_drdy_semaphore has been created.
- */
-volatile uint8_t scg_sync_ready = 0U;
-/*
  * Prevent EXTI callbacks from accessing timestamp queues
  * before tx_queue_create() has completed.
  */
@@ -129,17 +114,12 @@ extern volatile uint32_t icm_drdy_irq_count;
  */
 volatile uint32_t scg_thread_wakeup_count = 0U;
 
-volatile uint32_t scg_semaphore_put_success_count = 0U;
-volatile uint32_t scg_semaphore_put_error_count = 0U;
-
 volatile uint32_t scg_spi_success_count = 0U;
 volatile uint32_t scg_spi_error_count = 0U;
 
 /*
  * Most recent return values.
  */
-volatile UINT scg_semaphore_last_status = TX_SUCCESS;
-
 volatile HAL_StatusTypeDef scg_spi_last_status = HAL_OK;
 
 /*
@@ -148,8 +128,6 @@ volatile HAL_StatusTypeDef scg_spi_last_status = HAL_OK;
 volatile int16_t scg_accel_x_raw = 0;
 volatile int16_t scg_accel_y_raw = 0;
 volatile int16_t scg_accel_z_raw = 0;
-
-volatile uint32_t scg_last_sample_tick = 0U;
 
 /*
  * ECG timestamp queue diagnostics.
@@ -218,12 +196,6 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                        TX_APP_THREAD_TIME_SLICE, TX_APP_THREAD_AUTO_START) != TX_SUCCESS)
   {
     return TX_THREAD_ERROR;
-  }
-
-  /* Create ecg_drdy_semaphore.  */
-  if (tx_semaphore_create(&tx_app_semaphore, "ecg_drdy_semaphore", 0) != TX_SUCCESS)
-  {
-    return TX_SEMAPHORE_ERROR;
   }
 
   /* USER CODE BEGIN App_ThreadX_Init */
@@ -328,18 +300,6 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   }
 
   /*
-   * Create a counting semaphore with zero initial tokens.
-   * The SCG thread must wait for an actual Data Ready interrupt.
-   */
-  if (tx_semaphore_create(
-          &scg_drdy_semaphore,
-          "scg_drdy_semaphore",
-          0U) != TX_SUCCESS)
-  {
-      return TX_SEMAPHORE_ERROR;
-  }
-
-  /*
    * Create the SCG acquisition thread.
    */
   if (tx_thread_create(
@@ -357,14 +317,7 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
       return TX_THREAD_ERROR;
   }
 
-  /*
-   * Prevent ISR access while synchronization is being prepared.
-   */
-  scg_sync_ready = 0U;
-
-  /*
-   * Remove interrupts that occurred before the semaphore was ready.
-   */
+  /* Remove interrupts that occurred before the thread was ready. */
   __HAL_GPIO_EXTI_CLEAR_IT(ICM_INT_Pin);
   NVIC_ClearPendingIRQ(ICM_INT_EXTI_IRQn);
 
@@ -373,15 +326,8 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
    */
   icm_drdy_irq_count = 0U;
   scg_thread_wakeup_count = 0U;
-  scg_semaphore_put_success_count = 0U;
-  scg_semaphore_put_error_count = 0U;
   scg_spi_success_count = 0U;
   scg_spi_error_count = 0U;
-
-  /*
-   * The ISR may now safely put semaphore tokens.
-   */
-  scg_sync_ready = 1U;
 
   /*
    * Confirm that SCG_Sample has the exact size expected
@@ -432,8 +378,6 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 
 	drdy_irq_count = 0;
 	ecg_thread_wakeup_count = 0;
-	semaphore_put_success_count = 0;
-	semaphore_put_error_count = 0;
 
 	ecg_valid_frame_count = 0;
 	ecg_invalid_frame_count = 0;
@@ -656,13 +600,7 @@ void scg_acquisition_thread_entry(ULONG thread_input)
                 scg_accel_y_raw = accel_sample.y;
                 scg_accel_z_raw = accel_sample.z;
 
-                /*
-                 * Build one SCG sample record.
-                 *
-                 * Keep HAL_GetTick here temporarily.
-                 * The timestamp queue conversion will be done
-                 * after the common TIM2 timer has been verified.
-                 */
+                /* Build one SCG sample record. */
                 sample.sample_counter = sample_counter;
                 /*
                  * Combine the high and low 32-bit timer words into
