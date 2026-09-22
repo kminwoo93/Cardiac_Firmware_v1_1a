@@ -295,10 +295,11 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            /*
 	             * Drain all SCG samples currently available in the SCG queue.
 	             *
-	             * TX_NO_WAIT is used so that the USB thread does not block here.
-	             * If the queue is empty, the thread continues processing ECG.
+	             * Each received SCG sample is immediately converted into one
+	             * CSV "S" record and appended to usb_batch_buffer.
 	             */
-	            while (1)
+	            while ((USB_BATCH_BUFFER_SIZE - batch_length) >=
+	                   USB_CSV_ROW_RESERVE)
 	            {
 	                usb_scg_last_queue_status =
 	                    tx_queue_receive(
@@ -306,6 +307,9 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                        &scg_sample,
 	                        TX_NO_WAIT);
 
+	                /*
+	                 * No more SCG samples are currently available.
+	                 */
 	                if (usb_scg_last_queue_status != TX_SUCCESS)
 	                {
 	                    if (usb_scg_last_queue_status == TX_QUEUE_EMPTY)
@@ -317,17 +321,12 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                }
 
 	                /*
-	                 * One complete SCG sample was received.
+	                 * One SCG sample was successfully removed from the queue.
 	                 */
 	                usb_scg_queue_receive_count++;
 
 	                /*
-	                 * Preserve the most recent SCG sample.
-	                 */
-	                latest_scg_sample = scg_sample;
-
-	                /*
-	                 * Copy values to volatile variables for Live Expressions.
+	                 * Save the latest SCG values for Live Expressions.
 	                 */
 	                usb_scg_last_sample_counter =
 	                    scg_sample.sample_counter;
@@ -343,14 +342,56 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
 	                usb_scg_last_z_raw =
 	                    scg_sample.accel_z_raw;
+
+	                /*
+	                 * Append one SCG CSV record.
+	                 *
+	                 * ECG fields are zero because this is an SCG record.
+	                 */
+	                line_length = snprintf(
+	                    (char *)&usb_batch_buffer[batch_length],
+	                    USB_BATCH_BUFFER_SIZE - batch_length,
+	                    "S,%lu,%lu,0,0,0,0,0,0,%d,%d,%d\r\n",
+	                    (unsigned long)scg_sample.timestamp_ms,
+	                    (unsigned long)scg_sample.sample_counter,
+	                    (int)scg_sample.accel_x_raw,
+	                    (int)scg_sample.accel_y_raw,
+	                    (int)scg_sample.accel_z_raw);
+
+	                /*
+	                 * Check whether snprintf succeeded and the row fitted.
+	                 */
+	                if ((line_length <= 0) ||
+	                    ((uint32_t)line_length >=
+	                     (USB_BATCH_BUFFER_SIZE - batch_length)))
+	                {
+	                    usb_sample_error_count++;
+	                    break;
+	                }
+
+	                /*
+	                 * Include this SCG row in the current USB batch.
+	                 */
+	                batch_length += (uint32_t)line_length;
+	                batch_scg_count++;
+	                batch_record_count++;
 	            }
 
+	            /*
+	             * Make sure enough buffer space remains for one ECG row.
+	             */
+	            if ((USB_BATCH_BUFFER_SIZE - batch_length) <
+	                USB_CSV_ROW_RESERVE)
+	            {
+	                break;
+	            }
 	            /*
 	             * Append one ECG record.
 	             *
 	             * SCG fields are zero because this is an ECG record.
 	             * record_type 'E' identifies which fields are valid.
 	             */
+
 	            line_length = snprintf(
 	                (char *)&usb_batch_buffer[batch_length],
 	                USB_BATCH_BUFFER_SIZE - batch_length,
