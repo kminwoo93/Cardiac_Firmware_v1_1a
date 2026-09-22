@@ -70,7 +70,7 @@ volatile uint32_t usb_scg_queue_empty_count = 0U;
 volatile UINT usb_scg_last_queue_status = TX_SUCCESS;
 
 volatile uint32_t usb_scg_last_sample_counter = 0U;
-volatile uint32_t usb_scg_last_timestamp_ms = 0U;
+volatile uint64_t usb_scg_last_timestamp_us = 0ULL;
 
 volatile int16_t usb_scg_last_x_raw = 0;
 volatile int16_t usb_scg_last_y_raw = 0;
@@ -83,7 +83,10 @@ volatile uint32_t usb_total_record_send_count = 0U;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
-
+static uint32_t USB_UInt64ToDecimal(
+    uint64_t value,
+    char *destination,
+    uint32_t destination_size);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -138,6 +141,71 @@ VOID USBD_CDC_ACM_ParameterChange(VOID *cdc_acm_instance)
 }
 
 /* USER CODE BEGIN 1 */
+
+/*
+ * Convert one unsigned 64-bit integer into a decimal string.
+ *
+ * This avoids using %llu because the size-optimized newlib-nano
+ * snprintf implementation may not support long-long formatting.
+ *
+ * Return value:
+ *   Greater than zero: number of decimal characters written
+ *   Zero: destination buffer was too small or invalid
+ */
+static uint32_t USB_UInt64ToDecimal(
+    uint64_t value,
+    char *destination,
+    uint32_t destination_size)
+{
+    char reverse_digits[20];
+    uint32_t digit_count = 0U;
+    uint32_t index;
+
+    if ((destination == NULL) || (destination_size == 0U))
+    {
+        return 0U;
+    }
+
+    /*
+     * Generate digits in reverse order.
+     *
+     * The do-while form ensures that value 0
+     * becomes the string "0".
+     */
+    do
+    {
+        reverse_digits[digit_count] =
+            (char)('0' + (value % 10ULL));
+
+        digit_count++;
+        value /= 10ULL;
+    }
+    while ((value != 0ULL) &&
+           (digit_count < sizeof(reverse_digits)));
+
+    /*
+     * One extra byte is required for the terminating '\0'.
+     */
+    if (destination_size <= digit_count)
+    {
+        destination[0] = '\0';
+        return 0U;
+    }
+
+    /*
+     * Reverse the generated digits into normal order.
+     */
+    for (index = 0U; index < digit_count; index++)
+    {
+        destination[index] =
+            reverse_digits[digit_count - 1U - index];
+    }
+
+    destination[digit_count] = '\0';
+
+    return digit_count;
+}
+
 VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 {
     UCHAR rx_buffer[64];
@@ -186,6 +254,8 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
 	    int line_length;
 
+	    char timestamp_text[21];
+
 	    uint8_t stream_started = 0U;
 
 	    TX_PARAMETER_NOT_USED(thread_input);
@@ -205,7 +275,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	    usb_scg_last_queue_status = TX_SUCCESS;
 
 	    usb_scg_last_sample_counter = 0U;
-	    usb_scg_last_timestamp_ms = 0U;
+	    usb_scg_last_timestamp_us = 0ULL;
 
 	    usb_scg_last_x_raw = 0;
 	    usb_scg_last_y_raw = 0;
@@ -232,11 +302,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	        if (stream_started == 0U)
 	        {
 	        	static const UCHAR csv_header[] =
-	        	    "record_type,timestamp_ms,sample_counter,"
-	        	    "ch1_raw,ch2_raw,"
-	        	    "ch2_bandpass,ch2_notch,"
-	        	    "ch2_bandpass_notch,ch2_all_filter,"
-	        	    "accel_x_raw,accel_y_raw,accel_z_raw\r\n";
+	        	    "record_type,timestamp_us,sample_counter,v1,v2,v3\r\n";
 	            actual_length = 0;
 
 	            status = ux_device_class_cdc_acm_write(
@@ -300,11 +366,24 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	             * Append the received ECG record before draining SCG so the
 	             * ECG sample cannot be displaced by SCG rows.
 	             */
+	            /*
+	             * Convert the 64-bit timestamp without relying on
+	             * snprintf long-long support.
+	             */
+	            if (USB_UInt64ToDecimal(
+	                    sample.timestamp_us,
+	                    timestamp_text,
+	                    sizeof(timestamp_text)) == 0U)
+	            {
+	                usb_sample_error_count++;
+	                break;
+	            }
+
 	            line_length = snprintf(
 	                (char *)&usb_batch_buffer[batch_length],
 	                USB_BATCH_BUFFER_SIZE - batch_length,
-	                "E,%lu,%lu,%ld,0,0\r\n",
-	                (unsigned long)sample.timestamp_ms,
+	                "E,%s,%lu,%ld,0,0\r\n",
+	                timestamp_text,
 	                (unsigned long)sample.sample_counter,
 	                (long)sample.ch2_raw);
 
@@ -362,8 +441,8 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                usb_scg_last_sample_counter =
 	                    scg_sample.sample_counter;
 
-	                usb_scg_last_timestamp_ms =
-	                    scg_sample.timestamp_ms;
+	                usb_scg_last_timestamp_us =
+	                    scg_sample.timestamp_us;
 
 	                usb_scg_last_x_raw =
 	                    scg_sample.accel_x_raw;
@@ -379,11 +458,24 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                 *
 	                 * ECG fields are zero because this is an SCG record.
 	                 */
+	                /*
+	                 * Convert the 64-bit timestamp without relying on
+	                 * snprintf long-long support.
+	                 */
+	                if (USB_UInt64ToDecimal(
+	                        scg_sample.timestamp_us,
+	                        timestamp_text,
+	                        sizeof(timestamp_text)) == 0U)
+	                {
+	                    usb_sample_error_count++;
+	                    break;
+	                }
+
 	                line_length = snprintf(
 	                    (char *)&usb_batch_buffer[batch_length],
 	                    USB_BATCH_BUFFER_SIZE - batch_length,
-	                    "S,%lu,%lu,%d,%d,%d\r\n",
-	                    (unsigned long)scg_sample.timestamp_ms,
+	                    "S,%s,%lu,%d,%d,%d\r\n",
+	                    timestamp_text,
 	                    (unsigned long)scg_sample.sample_counter,
 	                    (int)scg_sample.accel_x_raw,
 	                    (int)scg_sample.accel_y_raw,

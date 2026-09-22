@@ -56,6 +56,7 @@ volatile uint32_t icm_drdy_irq_count = 0;
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern TIM_HandleTypeDef htim2;
 extern PCD_HandleTypeDef hpcd_USB_OTG_HS;
 extern TIM_HandleTypeDef htim6;
 
@@ -176,7 +177,7 @@ void EXTI0_IRQHandler(void)
 }
 
 /**
-  * @brief This function haFndles EXTI Line5 interrupt.
+  * @brief This function handles EXTI Line5 interrupt.
   */
 void EXTI5_IRQHandler(void)
 {
@@ -187,6 +188,20 @@ void EXTI5_IRQHandler(void)
   /* USER CODE BEGIN EXTI5_IRQn 1 */
   icm_drdy_irq_count++;
   /* USER CODE END EXTI5_IRQn 1 */
+}
+
+/**
+  * @brief This function handles TIM2 global interrupt.
+  */
+void TIM2_IRQHandler(void)
+{
+  /* USER CODE BEGIN TIM2_IRQn 0 */
+
+  /* USER CODE END TIM2_IRQn 0 */
+  HAL_TIM_IRQHandler(&htim2);
+  /* USER CODE BEGIN TIM2_IRQn 1 */
+
+  /* USER CODE END TIM2_IRQn 1 */
 }
 
 /**

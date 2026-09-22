@@ -38,7 +38,12 @@ extern "C" {
 typedef struct
 {
     uint32_t sample_counter;
-    uint32_t timestamp_ms;
+
+    /*
+     * ECG Data Ready interrupt time in microseconds.
+     * Generated from the common 1 MHz TIM2 timer.
+     */
+    uint64_t timestamp_us;
 
     int32_t ch1_raw;
     int32_t ch2_raw;
@@ -52,7 +57,12 @@ typedef struct
 typedef struct
 {
     uint32_t sample_counter;
-    uint32_t timestamp_ms;
+
+    /*
+     * SCG Data Ready interrupt time in microseconds.
+     * Generated from the same TIM2 timer used by ECG.
+     */
+    uint64_t timestamp_us;
 
     int16_t accel_x_raw;
     int16_t accel_y_raw;
@@ -60,6 +70,21 @@ typedef struct
 
     int16_t reserved;
 } SCG_Sample;
+
+/*
+ * Timestamp captured at the ECG or SCG Data Ready interrupt.
+ *
+ * timestamp_low:
+ *   Lower 32 bits from the 1 MHz TIM2 counter.
+ *
+ * timestamp_high:
+ *   Upper 32 bits incremented whenever TIM2 wraps.
+ */
+typedef struct
+{
+    uint32_t timestamp_low;
+    uint32_t timestamp_high;
+} SensorIrqTimestamp;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -73,10 +98,16 @@ typedef struct
 
 /* USER CODE BEGIN PD */
 #define ECG_QUEUE_CAPACITY       128U
-#define ECG_QUEUE_MESSAGE_SIZE   8U
+#define ECG_QUEUE_MESSAGE_SIZE   10U
 
 #define SCG_QUEUE_CAPACITY       128U
-#define SCG_QUEUE_MESSAGE_SIZE   4U
+#define SCG_QUEUE_MESSAGE_SIZE   6U
+
+/*
+ * ECG and SCG interrupt timestamp queues.
+ */
+#define TIMESTAMP_QUEUE_CAPACITY       128U
+#define TIMESTAMP_QUEUE_MESSAGE_SIZE   2U
 
 #define SCG_THREAD_STACK_SIZE    1024U
 #define SCG_THREAD_PRIORITY      5U

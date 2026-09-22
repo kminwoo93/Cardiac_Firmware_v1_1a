@@ -53,7 +53,13 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+/*
+ * Capture one common 1 MHz timestamp.
+ * Intended to be called from ECG or SCG EXTI callbacks.
+ */
+void Timestamp_CaptureFromISR(
+    uint32_t *timestamp_high,
+    uint32_t *timestamp_low);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

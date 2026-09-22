@@ -49,12 +49,33 @@ TX_SEMAPHORE tx_app_semaphore;
 /* USER CODE BEGIN PV */
 TX_QUEUE ecg_sample_queue;
 TX_QUEUE scg_sample_queue;
+/*
+ * Timestamp event queues written by the EXTI callbacks
+ * and read by the acquisition threads.
+ */
+TX_QUEUE ecg_timestamp_queue;
+TX_QUEUE scg_timestamp_queue;
 
 static ULONG ecg_queue_storage[
     ECG_QUEUE_CAPACITY * ECG_QUEUE_MESSAGE_SIZE
 ];
 static ULONG scg_queue_storage[
     SCG_QUEUE_CAPACITY * SCG_QUEUE_MESSAGE_SIZE
+];
+/*
+ * Static storage for timestamp queues.
+ *
+ * Each timestamp queue contains 128 messages.
+ * Each message is 2 ULONG = 8 bytes.
+ */
+static ULONG ecg_timestamp_queue_storage[
+    TIMESTAMP_QUEUE_CAPACITY *
+    TIMESTAMP_QUEUE_MESSAGE_SIZE
+];
+
+static ULONG scg_timestamp_queue_storage[
+    TIMESTAMP_QUEUE_CAPACITY *
+    TIMESTAMP_QUEUE_MESSAGE_SIZE
 ];
 
 extern volatile uint32_t drdy_irq_count;
@@ -92,7 +113,12 @@ TX_SEMAPHORE scg_drdy_semaphore;
  * This becomes 1 only after scg_drdy_semaphore has been created.
  */
 volatile uint8_t scg_sync_ready = 0U;
-
+/*
+ * Prevent EXTI callbacks from accessing timestamp queues
+ * before tx_queue_create() has completed.
+ */
+volatile uint8_t ecg_timestamp_queue_ready = 0U;
+volatile uint8_t scg_timestamp_queue_ready = 0U;
 /*
  * Defined in stm32u5xx_it.c.
  */
@@ -124,6 +150,40 @@ volatile int16_t scg_accel_y_raw = 0;
 volatile int16_t scg_accel_z_raw = 0;
 
 volatile uint32_t scg_last_sample_tick = 0U;
+
+/*
+ * ECG timestamp queue diagnostics.
+ */
+volatile uint32_t ecg_timestamp_queue_send_count = 0U;
+volatile uint32_t ecg_timestamp_queue_drop_count = 0U;
+volatile UINT ecg_timestamp_queue_last_status = TX_SUCCESS;
+
+/*
+ * SCG timestamp queue diagnostics.
+ */
+volatile uint32_t scg_timestamp_queue_send_count = 0U;
+volatile uint32_t scg_timestamp_queue_drop_count = 0U;
+volatile UINT scg_timestamp_queue_last_status = TX_SUCCESS;
+
+/*
+ * Timestamp queue receive diagnostics.
+ */
+volatile uint32_t ecg_timestamp_queue_receive_count = 0U;
+volatile uint32_t ecg_timestamp_queue_receive_error_count = 0U;
+volatile UINT ecg_timestamp_queue_receive_last_status = TX_SUCCESS;
+
+volatile uint32_t scg_timestamp_queue_receive_count = 0U;
+volatile uint32_t scg_timestamp_queue_receive_error_count = 0U;
+volatile UINT scg_timestamp_queue_receive_last_status = TX_SUCCESS;
+/*
+ * Most recently received ISR timestamp values.
+ * These are exposed for Live Expressions.
+ */
+volatile uint32_t ecg_irq_timestamp_high = 0U;
+volatile uint32_t ecg_irq_timestamp_low = 0U;
+
+volatile uint32_t scg_irq_timestamp_high = 0U;
+volatile uint32_t scg_irq_timestamp_low = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -187,6 +247,72 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   {
       return TX_QUEUE_ERROR;
   }
+
+  /*
+   * Timestamp queue messages must be exactly 2 ULONG
+   * units, which is 8 bytes on this MCU.
+   */
+  if (sizeof(SensorIrqTimestamp) !=
+      (TIMESTAMP_QUEUE_MESSAGE_SIZE * sizeof(ULONG)))
+  {
+      return TX_SIZE_ERROR;
+  }
+
+  /*
+   * Do not allow EXTI callbacks to access the queues
+   * while they are being created.
+   */
+  ecg_timestamp_queue_ready = 0U;
+  scg_timestamp_queue_ready = 0U;
+
+  /*
+   * Create ECG interrupt timestamp queue.
+   */
+  if (tx_queue_create(
+          &ecg_timestamp_queue,
+          "ecg_timestamp_queue",
+          TIMESTAMP_QUEUE_MESSAGE_SIZE,
+          ecg_timestamp_queue_storage,
+          sizeof(ecg_timestamp_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  /*
+   * Create SCG interrupt timestamp queue.
+   */
+  if (tx_queue_create(
+          &scg_timestamp_queue,
+          "scg_timestamp_queue",
+          TIMESTAMP_QUEUE_MESSAGE_SIZE,
+          scg_timestamp_queue_storage,
+          sizeof(scg_timestamp_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  /*
+   * Reset timestamp queue diagnostic counters.
+   */
+  ecg_timestamp_queue_send_count = 0U;
+  ecg_timestamp_queue_drop_count = 0U;
+  ecg_timestamp_queue_last_status = TX_SUCCESS;
+
+  scg_timestamp_queue_send_count = 0U;
+  scg_timestamp_queue_drop_count = 0U;
+  scg_timestamp_queue_last_status = TX_SUCCESS;
+
+  ecg_irq_timestamp_high = 0U;
+  ecg_irq_timestamp_low = 0U;
+
+  scg_irq_timestamp_high = 0U;
+  scg_irq_timestamp_low = 0U;
+  /*
+   * Timestamp queues may now be accessed from EXTI callbacks.
+   */
+  ecg_timestamp_queue_ready = 1U;
+  scg_timestamp_queue_ready = 1U;
+
   /*
    * Allocate SCG thread stack.
    */
@@ -293,6 +419,7 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 {
   /* USER CODE BEGIN ecg_acquisition_thread_entry */
 	ECG_Sample sample;
+	SensorIrqTimestamp irq_timestamp;
 
 	ADS1292R_CH2FilterState ch2_filter;
 	ADS1292R_CH2FilterOutput ch2_output;
@@ -325,13 +452,34 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 
 	  while (1)
 	  {
-		    if (tx_semaphore_get(&tx_app_semaphore,
-		                         TX_WAIT_FOREVER) == TX_SUCCESS)
+		    /*
+		     * Wait directly for one ECG interrupt timestamp.
+		     *
+		     * TX_WAIT_FOREVER blocks this thread without consuming CPU.
+		     * One queue message represents one ECG Data Ready event.
+		     */
+		    ecg_timestamp_queue_receive_last_status =
+		        tx_queue_receive(
+		            &ecg_timestamp_queue,
+		            &irq_timestamp,
+		            TX_WAIT_FOREVER);
+
+		    if (ecg_timestamp_queue_receive_last_status == TX_SUCCESS)
 		    {
+		        ecg_timestamp_queue_receive_count++;
+		        ecg_thread_wakeup_count++;
 
-		    	ecg_thread_wakeup_count++;
+		        /*
+		         * Expose the most recently received timestamp
+		         * through Live Expressions.
+		         */
+		        ecg_irq_timestamp_high =
+		            irq_timestamp.timestamp_high;
 
-		    	    ADS1292R_ReadData((uint8_t *)ecg_raw);
+		        ecg_irq_timestamp_low =
+		            irq_timestamp.timestamp_low;
+
+		        ADS1292R_ReadData((uint8_t *)ecg_raw);
 
 		    	    /*
 		    	     * Valid ADS1292R status starts with 1100.
@@ -367,7 +515,13 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    	         * Fill one queue message.
 		    	         */
 		    	        sample.sample_counter = sample_counter;
-                        sample.timestamp_ms = HAL_GetTick();
+		    	        /*
+		    	         * Combine the high and low 32-bit timer words into
+		    	         * one continuous 64-bit microsecond timestamp.
+		    	         */
+		    	        sample.timestamp_us =
+		    	            ((uint64_t)irq_timestamp.timestamp_high << 32) |
+		    	            (uint64_t)irq_timestamp.timestamp_low;
 
 		    	        sample.ch1_raw = ecg_ch1_raw;
 		    	        sample.ch2_raw = ecg_ch2_raw;
@@ -419,91 +573,6 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
   * @param  None
   * @retval None
   */
-
-void scg_acquisition_thread_entry(ULONG thread_input)
-{
-	ICM20948_AccelRaw accel_sample;
-	    SCG_Sample sample;
-
-	    uint32_t sample_counter = 0U;
-	    TX_PARAMETER_NOT_USED(thread_input);
-
-	    scg_thread_wakeup_count = 0U;
-	    scg_spi_success_count = 0U;
-	    scg_spi_error_count = 0U;
-
-	    scg_queue_send_count = 0U;
-	    scg_queue_drop_count = 0U;
-	    scg_queue_last_status = TX_SUCCESS;
-
-	    while (1)
-	    {
-	        if (tx_semaphore_get(
-	                &scg_drdy_semaphore,
-	                TX_WAIT_FOREVER) == TX_SUCCESS)
-	        {
-	            scg_thread_wakeup_count++;
-
-	            /*
-	             * Read exactly one XYZ sample after one
-	             * Data Ready event.
-	             */
-	            scg_spi_last_status =
-	                ICM20948_ReadAccelRaw(&accel_sample);
-
-	            if (scg_spi_last_status == HAL_OK)
-	            {
-	                scg_spi_success_count++;
-	                sample_counter++;
-
-	                /*
-	                 * Keep the latest values for debugger inspection.
-	                 */
-	                scg_accel_x_raw = accel_sample.x;
-	                scg_accel_y_raw = accel_sample.y;
-	                scg_accel_z_raw = accel_sample.z;
-
-	                /*
-	                 * Build one complete queue message.
-	                 */
-	                sample.sample_counter = sample_counter;
-	                sample.timestamp_ms = HAL_GetTick();
-
-	                sample.accel_x_raw = accel_sample.x;
-	                sample.accel_y_raw = accel_sample.y;
-	                sample.accel_z_raw = accel_sample.z;
-	                sample.reserved = 0;
-
-	                /*
-	                 * Send without blocking acquisition.
-	                 */
-	                scg_queue_last_status =
-	                    tx_queue_send(
-	                        &scg_sample_queue,
-	                        &sample,
-	                        TX_NO_WAIT);
-
-	                if (scg_queue_last_status == TX_SUCCESS)
-	                {
-	                    scg_queue_send_count++;
-	                }
-	                else
-	                {
-	                    scg_queue_drop_count++;
-	                }
-	            }
-	            else
-	            {
-	                scg_spi_error_count++;
-	            }
-	        }
-	    }
-}
-
-
-
-
-
 void MX_ThreadX_Init(void)
 {
   /* USER CODE BEGIN Before_Kernel_Start */
@@ -518,24 +587,155 @@ void MX_ThreadX_Init(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/*
+ * SCG acquisition thread.
+ *
+ * This function is placed inside USER CODE BEGIN 1 so that
+ * CubeMX code generation does not delete it.
+ */
+void scg_acquisition_thread_entry(ULONG thread_input)
+{
+	ICM20948_AccelRaw accel_sample;
+	SCG_Sample sample;
+	SensorIrqTimestamp irq_timestamp;
+
+    uint32_t sample_counter = 0U;
+
+    TX_PARAMETER_NOT_USED(thread_input);
+
+    scg_thread_wakeup_count = 0U;
+    scg_spi_success_count = 0U;
+    scg_spi_error_count = 0U;
+
+    scg_queue_send_count = 0U;
+    scg_queue_drop_count = 0U;
+    scg_queue_last_status = TX_SUCCESS;
+
+    while (1)
+    {
+        /*
+         * Wait directly for one SCG interrupt timestamp.
+         *
+         * One timestamp queue message represents one
+         * ICM-20948 Data Ready event.
+         */
+        scg_timestamp_queue_receive_last_status =
+            tx_queue_receive(
+                &scg_timestamp_queue,
+                &irq_timestamp,
+                TX_WAIT_FOREVER);
+
+        if (scg_timestamp_queue_receive_last_status == TX_SUCCESS)
+        {
+            scg_timestamp_queue_receive_count++;
+            scg_thread_wakeup_count++;
+
+            /*
+             * Expose the most recently received timestamp
+             * through Live Expressions.
+             */
+            scg_irq_timestamp_high =
+                irq_timestamp.timestamp_high;
+
+            scg_irq_timestamp_low =
+                irq_timestamp.timestamp_low;
+
+            scg_spi_last_status =
+                ICM20948_ReadAccelRaw(&accel_sample);
+
+            if (scg_spi_last_status == HAL_OK)
+            {
+                scg_spi_success_count++;
+                sample_counter++;
+
+                /*
+                 * Keep the latest values for Live Expressions.
+                 */
+                scg_accel_x_raw = accel_sample.x;
+                scg_accel_y_raw = accel_sample.y;
+                scg_accel_z_raw = accel_sample.z;
+
+                /*
+                 * Build one SCG sample record.
+                 *
+                 * Keep HAL_GetTick here temporarily.
+                 * The timestamp queue conversion will be done
+                 * after the common TIM2 timer has been verified.
+                 */
+                sample.sample_counter = sample_counter;
+                /*
+                 * Combine the high and low 32-bit timer words into
+                 * one continuous 64-bit microsecond timestamp.
+                 */
+                sample.timestamp_us =
+                    ((uint64_t)irq_timestamp.timestamp_high << 32) |
+                    (uint64_t)irq_timestamp.timestamp_low;
+
+                sample.accel_x_raw = accel_sample.x;
+                sample.accel_y_raw = accel_sample.y;
+                sample.accel_z_raw = accel_sample.z;
+                sample.reserved = 0;
+
+                /*
+                 * Do not block the acquisition thread when
+                 * the USB sample queue is full.
+                 */
+                scg_queue_last_status =
+                    tx_queue_send(
+                        &scg_sample_queue,
+                        &sample,
+                        TX_NO_WAIT);
+
+                if (scg_queue_last_status == TX_SUCCESS)
+                {
+                    scg_queue_send_count++;
+                }
+                else
+                {
+                    scg_queue_drop_count++;
+                }
+            }
+            else
+            {
+                scg_spi_error_count++;
+            }
+        }
+    }
+}
 void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin)
 {
-	if (GPIO_Pin == DRDY_Pin)
-	  {
-	    UINT status;
+    if (GPIO_Pin == DRDY_Pin)
+    {
 
-	    status = tx_semaphore_put(&tx_app_semaphore);
-	    semaphore_last_status = status;
+        /*
+         * Capture and queue the exact ECG Data Ready
+         * interrupt time before waking the ECG thread.
+         */
+        if (ecg_timestamp_queue_ready != 0U)
+        {
+            SensorIrqTimestamp irq_timestamp;
 
-	    if (status == TX_SUCCESS)
-	    {
-	      semaphore_put_success_count++;
-	    }
-	    else
-	    {
-	      semaphore_put_error_count++;
-	    }
-	  }
+            Timestamp_CaptureFromISR(
+                &irq_timestamp.timestamp_high,
+                &irq_timestamp.timestamp_low);
+
+            ecg_timestamp_queue_last_status =
+                tx_queue_send(
+                    &ecg_timestamp_queue,
+                    &irq_timestamp,
+                    TX_NO_WAIT);
+
+            if (ecg_timestamp_queue_last_status == TX_SUCCESS)
+            {
+                ecg_timestamp_queue_send_count++;
+            }
+            else
+            {
+                ecg_timestamp_queue_drop_count++;
+            }
+        }
+    }
 }
 
 void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
@@ -543,22 +743,38 @@ void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
     if (GPIO_Pin == ICM_INT_Pin)
     {
         /*
-         * Do not access the semaphore before it has been created.
+         * Do not access the ThreadX queue before
+         * tx_queue_create() has completed.
          */
-        if (scg_sync_ready != 0U)
+        if (scg_timestamp_queue_ready != 0U)
         {
-            scg_semaphore_last_status =
-                tx_semaphore_put(&scg_drdy_semaphore);
+            SensorIrqTimestamp irq_timestamp;
 
-            if (scg_semaphore_last_status == TX_SUCCESS)
+            /*
+             * Capture the exact SCG Data Ready time.
+             * Sending the timestamp also wakes the SCG thread.
+             */
+            Timestamp_CaptureFromISR(
+                &irq_timestamp.timestamp_high,
+                &irq_timestamp.timestamp_low);
+
+            scg_timestamp_queue_last_status =
+                tx_queue_send(
+                    &scg_timestamp_queue,
+                    &irq_timestamp,
+                    TX_NO_WAIT);
+
+            if (scg_timestamp_queue_last_status == TX_SUCCESS)
             {
-                scg_semaphore_put_success_count++;
+                scg_timestamp_queue_send_count++;
             }
             else
             {
-                scg_semaphore_put_error_count++;
+                scg_timestamp_queue_drop_count++;
             }
         }
     }
 }
+
+
 /* USER CODE END 1 */

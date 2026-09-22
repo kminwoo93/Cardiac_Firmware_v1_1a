@@ -48,10 +48,18 @@ I2C_HandleTypeDef hi2c1;
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi3;
 
+TIM_HandleTypeDef htim2;
+
 PCD_HandleTypeDef hpcd_USB_OTG_HS;
 
 /* USER CODE BEGIN PV */
-
+/*
+ * Upper 32 bits of the common 1 MHz timestamp.
+ *
+ * TIM2->CNT is the lower 32 bits and wraps every
+ * 4294967296 us, approximately 71.58 minutes.
+ */
+volatile uint32_t timestamp_overflow_count = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,12 +71,43 @@ static void MX_I2C1_Init(void);
 static void MX_USB_OTG_HS_PCD_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SPI3_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+/**
+ * @brief Capture the common 1 MHz timestamp.
+ *
+ * TIM2->CNT provides the lower 32 bits.
+ * timestamp_overflow_count provides the upper 32 bits.
+ *
+ * The values are read repeatedly if an overflow occurred
+ * during the capture.
+ */
+void Timestamp_CaptureFromISR(
+    uint32_t *timestamp_high,
+    uint32_t *timestamp_low)
+{
+    uint32_t high_before;
+    uint32_t high_after;
+    uint32_t low;
+
+    do
+    {
+        high_before = timestamp_overflow_count;
+
+        low = __HAL_TIM_GET_COUNTER(&htim2);
+
+        high_after = timestamp_overflow_count;
+    }
+    while (high_before != high_after);
+
+    *timestamp_high = high_before;
+    *timestamp_low = low;
+}
 
 /* USER CODE END 0 */
 
@@ -109,7 +148,23 @@ int main(void)
   MX_USB_OTG_HS_PCD_Init();
   MX_SPI1_Init();
   MX_SPI3_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+  /*
+   * Reset and start the common 1 MHz timestamp timer
+   * before either sensor starts producing interrupts.
+   */
+  timestamp_overflow_count = 0U;
+  __HAL_TIM_SET_COUNTER(&htim2, 0U);
+
+  if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
+  {
+      Error_Handler();
+  }
+  /*
+   * Existing sensor initialization starts below.
+   */
   uint8_t ads_id = 0;
   volatile uint8_t config1_before = 0;
   volatile uint8_t config1_after  = 0;
@@ -467,6 +522,51 @@ static void MX_SPI3_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 79;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief USB_OTG_HS Initialization Function
   * @param None
   * @retval None
@@ -629,7 +729,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
-
+  /*
+   * TIM2 is the common 1 MHz free-running timestamp timer.
+   * Increment the upper 32-bit word whenever TIM2 wraps.
+   */
+  if (htim->Instance == TIM2)
+  {
+      timestamp_overflow_count++;
+  }
   /* USER CODE END Callback 1 */
 }
 
