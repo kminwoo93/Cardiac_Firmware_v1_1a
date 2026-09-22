@@ -298,8 +298,6 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 	ADS1292R_CH2FilterOutput ch2_output;
 
 	uint32_t sample_counter = 0;
-	uint32_t start_tick;
-
 	TX_PARAMETER_NOT_USED(thread_input);
 
 	uint8_t ecg_raw[9];
@@ -318,7 +316,6 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 	/*Filter initialization*/
 	ADS1292R_CH2FilterInit(&ch2_filter);
 	sample_counter = 0;
-	start_tick = HAL_GetTick();
 	/* ThreadX 실행 전에 쌓인 DRDY pending flag 제거 */
 	  __HAL_GPIO_EXTI_CLEAR_IT(DRDY_Pin);
 	  NVIC_ClearPendingIRQ(EXTI0_IRQn);
@@ -370,7 +367,7 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    	         * Fill one queue message.
 		    	         */
 		    	        sample.sample_counter = sample_counter;
-		    	        sample.timestamp_ms = HAL_GetTick() - start_tick;
+                        sample.timestamp_ms = HAL_GetTick();
 
 		    	        sample.ch1_raw = ecg_ch1_raw;
 		    	        sample.ch2_raw = ecg_ch2_raw;
@@ -429,11 +426,7 @@ void scg_acquisition_thread_entry(ULONG thread_input)
 	    SCG_Sample sample;
 
 	    uint32_t sample_counter = 0U;
-	    uint32_t start_tick;
-
 	    TX_PARAMETER_NOT_USED(thread_input);
-
-	    start_tick = HAL_GetTick();
 
 	    scg_thread_wakeup_count = 0U;
 	    scg_spi_success_count = 0U;
@@ -474,8 +467,7 @@ void scg_acquisition_thread_entry(ULONG thread_input)
 	                 * Build one complete queue message.
 	                 */
 	                sample.sample_counter = sample_counter;
-	                sample.timestamp_ms =
-	                    HAL_GetTick() - start_tick;
+	                sample.timestamp_ms = HAL_GetTick();
 
 	                sample.accel_x_raw = accel_sample.x;
 	                sample.accel_y_raw = accel_sample.y;
