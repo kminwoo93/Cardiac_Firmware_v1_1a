@@ -123,7 +123,8 @@ int main(void)
 
   if (icm_init_status != HAL_OK)
   {
-      Error_Handler();
+	    icm_init_status =
+	        ICM20948_EnableDataReadyInterrupt();
   }
 
 //

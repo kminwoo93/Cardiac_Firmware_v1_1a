@@ -208,6 +208,17 @@ HAL_StatusTypeDef ICM20948_Init(void)
         return status;
     }
 
+    /*
+     * Start Data Ready interrupt generation only after
+     * the accelerometer configuration is complete.
+     */
+    status = ICM20948_EnableDataReadyInterrupt();
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
     return HAL_OK;
 }
 
@@ -368,4 +379,69 @@ HAL_StatusTypeDef ICM20948_ReadAccelRaw(
     return HAL_OK;
 }
 
+HAL_StatusTypeDef ICM20948_EnableDataReadyInterrupt(void)
+{
+    HAL_StatusTypeDef status;
+    uint8_t readback = 0U;
 
+    /*
+     * Interrupt registers are in User Bank 0.
+     */
+    status = ICM20948_SelectBank(0);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    /*
+     * INT_PIN_CFG = 0x00
+     *
+     * INT1 active high
+     * Push-pull output
+     * Pulse mode
+     * Interrupt status cleared by reading INT_STATUS
+     *
+     * This matches the STM32 PB5 rising-edge EXTI setting.
+     */
+    status = ICM20948_WriteRegister(
+        ICM20948_REG_INT_PIN_CFG,
+        0x00U);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    /*
+     * Generate an INT1 pulse whenever new accelerometer
+     * raw data is ready.
+     */
+    status = ICM20948_WriteRegister(
+        ICM20948_REG_INT_ENABLE_1,
+        ICM20948_RAW_DATA_0_RDY_EN);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    /*
+     * Verify that RAW_DATA_0_RDY interrupt was enabled.
+     */
+    status = ICM20948_ReadRegister(
+        ICM20948_REG_INT_ENABLE_1,
+        &readback);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    if ((readback & ICM20948_RAW_DATA_0_RDY_EN) == 0U)
+    {
+        return HAL_ERROR;
+    }
+
+    return HAL_OK;
+}

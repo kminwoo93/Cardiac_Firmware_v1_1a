@@ -3,5 +3,6 @@
 ../Core/Src/icm20948.c:82:19:ICM20948_SelectBank	16	static
 ../Core/Src/icm20948.c:95:19:ICM20948_ReadWhoAmI	24	static
 ../Core/Src/icm20948.c:111:19:ICM20948_Init	16	static
-../Core/Src/icm20948.c:214:19:ICM20948_ConfigureAccelerometerSCG	16	static
-../Core/Src/icm20948.c:308:19:ICM20948_ReadAccelRaw	40	static
+../Core/Src/icm20948.c:225:19:ICM20948_ConfigureAccelerometerSCG	16	static
+../Core/Src/icm20948.c:319:19:ICM20948_ReadAccelRaw	40	static
+../Core/Src/icm20948.c:382:19:ICM20948_EnableDataReadyInterrupt	16	static

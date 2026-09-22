@@ -42,6 +42,7 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 volatile uint32_t drdy_irq_count = 0;
+volatile uint32_t icm_drdy_irq_count = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -175,7 +176,7 @@ void EXTI0_IRQHandler(void)
 }
 
 /**
-  * @brief This function handles EXTI Line5 interrupt.
+  * @brief This function haFndles EXTI Line5 interrupt.
   */
 void EXTI5_IRQHandler(void)
 {
@@ -184,7 +185,7 @@ void EXTI5_IRQHandler(void)
   /* USER CODE END EXTI5_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(ICM_INT_Pin);
   /* USER CODE BEGIN EXTI5_IRQn 1 */
-
+  icm_drdy_irq_count++;
   /* USER CODE END EXTI5_IRQn 1 */
 }
 

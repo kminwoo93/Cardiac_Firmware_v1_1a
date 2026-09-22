@@ -48,6 +48,18 @@ typedef struct
     int32_t ch2_bandpass_notch;
     int32_t ch2_all_filter;
 } ECG_Sample;
+
+typedef struct
+{
+    uint32_t sample_counter;
+    uint32_t timestamp_ms;
+
+    int16_t accel_x_raw;
+    int16_t accel_y_raw;
+    int16_t accel_z_raw;
+
+    int16_t reserved;
+} SCG_Sample;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -62,6 +74,12 @@ typedef struct
 /* USER CODE BEGIN PD */
 #define ECG_QUEUE_CAPACITY       128U
 #define ECG_QUEUE_MESSAGE_SIZE   8U
+
+#define SCG_QUEUE_CAPACITY       128U
+#define SCG_QUEUE_MESSAGE_SIZE   4U
+
+#define SCG_THREAD_STACK_SIZE    1024U
+#define SCG_THREAD_PRIORITY      5U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -92,6 +110,9 @@ void ecg_acquisition_thread_entry(ULONG thread_input);
 
 /* USER CODE BEGIN EFP */
 extern TX_QUEUE ecg_sample_queue;
+extern TX_QUEUE scg_sample_queue;
+
+void scg_acquisition_thread_entry(ULONG thread_input);
 /* USER CODE END EFP */
 
 /* USER CODE BEGIN 1 */

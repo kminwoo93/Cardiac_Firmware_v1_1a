@@ -16,6 +16,10 @@
 #define ICM20948_REG_WHO_AM_I       0x00
 #define ICM20948_REG_PWR_MGMT_1     0x06
 #define ICM20948_REG_PWR_MGMT_2     0x07
+/* ICM-20948 User Bank 0 interrupt registers */
+#define ICM20948_REG_INT_PIN_CFG       0x0FU
+#define ICM20948_REG_INT_ENABLE_1      0x11U
+#define ICM20948_REG_INT_STATUS_1      0x1AU
 
 #define ICM20948_WHO_AM_I_VALUE     0xEA
 
@@ -31,6 +35,11 @@
 #define ICM20948_ACCEL_SMPLRT_DIV_SCG      1U
 
 #define ICM20948_REG_ACCEL_XOUT_H    0x2D
+
+/* INT_ENABLE_1 register bit 0 */
+#define ICM20948_RAW_DATA_0_RDY_EN     0x01U
+/* INT_STATUS_1 register bit 0 */
+#define ICM20948_RAW_DATA_0_RDY_INT    0x01U
 
 typedef struct
 {
@@ -63,5 +72,7 @@ HAL_StatusTypeDef ICM20948_SelectBank(uint8_t bank);
 HAL_StatusTypeDef ICM20948_ReadWhoAmI(uint8_t *who_am_i);
 
 HAL_StatusTypeDef ICM20948_ConfigureAccelerometerSCG(void);
+
+HAL_StatusTypeDef ICM20948_EnableDataReadyInterrupt(void);
 
 #endif /* INC_ICM20948_H_ */

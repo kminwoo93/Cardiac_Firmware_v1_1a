@@ -1,5 +1,5 @@
-../USBX/App/ux_device_cdc_acm.c:78:6:USBD_CDC_ACM_Activate	1
-../USBX/App/ux_device_cdc_acm.c:93:6:USBD_CDC_ACM_Deactivate	1
-../USBX/App/ux_device_cdc_acm.c:109:6:USBD_CDC_ACM_ParameterChange	1
-../USBX/App/ux_device_cdc_acm.c:119:6:usbx_cdc_acm_read_thread_entry	2
-../USBX/App/ux_device_cdc_acm.c:150:6:usbx_cdc_acm_write_thread_entry	15
+../USBX/App/ux_device_cdc_acm.c:100:6:USBD_CDC_ACM_Activate	1
+../USBX/App/ux_device_cdc_acm.c:115:6:USBD_CDC_ACM_Deactivate	1
+../USBX/App/ux_device_cdc_acm.c:131:6:USBD_CDC_ACM_ParameterChange	1
+../USBX/App/ux_device_cdc_acm.c:141:6:usbx_cdc_acm_read_thread_entry	2
+../USBX/App/ux_device_cdc_acm.c:172:6:usbx_cdc_acm_write_thread_entry	16

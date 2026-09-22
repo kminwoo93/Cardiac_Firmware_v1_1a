@@ -42,8 +42,7 @@ USBX/App/ux_device_cdc_acm.o: ../USBX/App/ux_device_cdc_acm.c \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h \
- ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
- ../Core/Inc/icm20948.h ../Core/Inc/main.h
+ ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h
 ../USBX/App/ux_device_cdc_acm.h:
 ../Middlewares/ST/usbx/common/core/inc/ux_api.h:
 ../Middlewares/ST/usbx/ports/generic/inc/ux_port.h:
@@ -90,5 +89,3 @@ USBX/App/ux_device_cdc_acm.o: ../USBX/App/ux_device_cdc_acm.c \
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h:
-../Core/Inc/icm20948.h:
-../Core/Inc/main.h:

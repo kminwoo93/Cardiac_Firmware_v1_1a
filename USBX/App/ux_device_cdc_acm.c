@@ -25,7 +25,6 @@
 /* USER CODE BEGIN Includes */
 #include "app_threadx.h"
 #include "main.h"
-#include "icm20948.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -36,8 +35,15 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ECG_USB_BATCH_SAMPLES    16U
-#define ECG_USB_BATCH_BUFFER_SIZE 4096U
+#define USB_BATCH_ECG_SAMPLES       16U
+#define USB_BATCH_BUFFER_SIZE       4096U
+/*
+ * Do not remove a queue message unless enough buffer
+ * space remains for one complete CSV row.
+ */
+#define USB_CSV_ROW_RESERVE         160U
+#define SCG_USB_BATCH_SAMPLES		16U
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,7 +53,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-static UCHAR ecg_usb_batch_buffer[ECG_USB_BATCH_BUFFER_SIZE];
+static UCHAR usb_batch_buffer[USB_BATCH_BUFFER_SIZE];
 
 volatile uint32_t usb_queue_receive_count = 0;
 volatile uint32_t usb_sample_send_count = 0;
@@ -57,6 +63,22 @@ volatile uint32_t usb_batch_error_count = 0;
 
 volatile UINT usb_last_queue_status = TX_SUCCESS;
 volatile UINT usb_last_write_status = UX_SUCCESS;
+
+volatile uint32_t usb_scg_queue_receive_count = 0U;
+volatile uint32_t usb_scg_queue_empty_count = 0U;
+
+volatile UINT usb_scg_last_queue_status = TX_SUCCESS;
+
+volatile uint32_t usb_scg_last_sample_counter = 0U;
+volatile uint32_t usb_scg_last_timestamp_ms = 0U;
+
+volatile int16_t usb_scg_last_x_raw = 0;
+volatile int16_t usb_scg_last_y_raw = 0;
+volatile int16_t usb_scg_last_z_raw = 0;
+
+volatile uint32_t usb_ecg_batch_record_count = 0U;
+volatile uint32_t usb_scg_batch_record_count = 0U;
+volatile uint32_t usb_total_record_send_count = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -150,14 +172,22 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
 	ECG_Sample sample;
-	//
-	ICM20948_AccelRaw imu_accel;
-	HAL_StatusTypeDef imu_read_status;
-	//
+	/*
+	     * One SCG message received from scg_sample_queue.
+	     */
+	    SCG_Sample scg_sample;
+	    /*
+	     * Most recently received SCG sample.
+	     * This is temporarily used for the existing combined CSV row.
+	     */
+	    SCG_Sample latest_scg_sample = {0};
+
 	    ULONG actual_length;
 	    UINT status;
 
-	    uint32_t batch_sample_count;
+	    uint32_t batch_ecg_count;
+	    uint32_t batch_scg_count;
+	    uint32_t batch_record_count;
 	    uint32_t batch_length;
 
 	    int line_length;
@@ -174,6 +204,18 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
 	    usb_last_queue_status = TX_SUCCESS;
 	    usb_last_write_status = UX_SUCCESS;
+
+	    usb_scg_queue_receive_count = 0U;
+	    usb_scg_queue_empty_count = 0U;
+
+	    usb_scg_last_queue_status = TX_SUCCESS;
+
+	    usb_scg_last_sample_counter = 0U;
+	    usb_scg_last_timestamp_ms = 0U;
+
+	    usb_scg_last_x_raw = 0;
+	    usb_scg_last_y_raw = 0;
+	    usb_scg_last_z_raw = 0;
 
 	    while (1)
 	    {
@@ -196,7 +238,8 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	        if (stream_started == 0U)
 	        {
 	        	static const UCHAR csv_header[] =
-	        	    "timestamp_ms,sample_counter,ch1_raw,ch2_raw,"
+	        	    "record_type,timestamp_ms,sample_counter,"
+	        	    "ch1_raw,ch2_raw,"
 	        	    "ch2_bandpass,ch2_notch,"
 	        	    "ch2_bandpass_notch,ch2_all_filter,"
 	        	    "accel_x_raw,accel_y_raw,accel_z_raw\r\n";
@@ -224,10 +267,12 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	        /*
 	         * Start building a new USB batch.
 	         */
-	        batch_sample_count = 0U;
+	        batch_ecg_count = 0U;
+	        batch_scg_count = 0U;
+	        batch_record_count = 0U;
 	        batch_length = 0U;
 
-	        while (batch_sample_count < ECG_USB_BATCH_SAMPLES)
+	        while (batch_ecg_count < USB_BATCH_ECG_SAMPLES)
 	        {
 	            /*
 	             * Sleep until the next ECG sample is available.
@@ -246,25 +291,70 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            }
 
 	            usb_queue_receive_count++;
-	            //
-	            imu_read_status = ICM20948_ReadAccelRaw(&imu_accel);
-
-	            if (imu_read_status != HAL_OK)
-	            {
-	                imu_accel.x = 0;
-	                imu_accel.y = 0;
-	                imu_accel.z = 0;
-	            }
-	            //
-
 
 	            /*
-	             * Append one CSV row to the batch buffer.
+	             * Drain all SCG samples currently available in the SCG queue.
+	             *
+	             * TX_NO_WAIT is used so that the USB thread does not block here.
+	             * If the queue is empty, the thread continues processing ECG.
+	             */
+	            while (1)
+	            {
+	                usb_scg_last_queue_status =
+	                    tx_queue_receive(
+	                        &scg_sample_queue,
+	                        &scg_sample,
+	                        TX_NO_WAIT);
+
+	                if (usb_scg_last_queue_status != TX_SUCCESS)
+	                {
+	                    if (usb_scg_last_queue_status == TX_QUEUE_EMPTY)
+	                    {
+	                        usb_scg_queue_empty_count++;
+	                    }
+
+	                    break;
+	                }
+
+	                /*
+	                 * One complete SCG sample was received.
+	                 */
+	                usb_scg_queue_receive_count++;
+
+	                /*
+	                 * Preserve the most recent SCG sample.
+	                 */
+	                latest_scg_sample = scg_sample;
+
+	                /*
+	                 * Copy values to volatile variables for Live Expressions.
+	                 */
+	                usb_scg_last_sample_counter =
+	                    scg_sample.sample_counter;
+
+	                usb_scg_last_timestamp_ms =
+	                    scg_sample.timestamp_ms;
+
+	                usb_scg_last_x_raw =
+	                    scg_sample.accel_x_raw;
+
+	                usb_scg_last_y_raw =
+	                    scg_sample.accel_y_raw;
+
+	                usb_scg_last_z_raw =
+	                    scg_sample.accel_z_raw;
+	            }
+
+	            /*
+	             * Append one ECG record.
+	             *
+	             * SCG fields are zero because this is an ECG record.
+	             * record_type 'E' identifies which fields are valid.
 	             */
 	            line_length = snprintf(
-	                (char *)&ecg_usb_batch_buffer[batch_length],
-	                ECG_USB_BATCH_BUFFER_SIZE - batch_length,
-	                "%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%d,%d,%d\r\n",
+	                (char *)&usb_batch_buffer[batch_length],
+	                USB_BATCH_BUFFER_SIZE - batch_length,
+	                "E,%lu,%lu,%ld,%ld,%ld,%ld,%ld,%ld,0,0,0\r\n",
 	                (unsigned long)sample.timestamp_ms,
 	                (unsigned long)sample.sample_counter,
 	                (long)sample.ch1_raw,
@@ -272,30 +362,28 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                (long)sample.ch2_bandpass,
 	                (long)sample.ch2_notch,
 	                (long)sample.ch2_bandpass_notch,
-	                (long)sample.ch2_all_filter,
-	                (int)imu_accel.x,
-	                (int)imu_accel.y,
-	                (int)imu_accel.z);
+	                (long)sample.ch2_all_filter);
 
 	            /*
 	             * Check snprintf result and remaining buffer space.
 	             */
 	            if ((line_length <= 0) ||
 	                ((uint32_t)line_length >=
-	                 (ECG_USB_BATCH_BUFFER_SIZE - batch_length)))
+	                 (USB_BATCH_BUFFER_SIZE - batch_length)))
 	            {
 	                usb_sample_error_count++;
 	                break;
 	            }
 
 	            batch_length += (uint32_t)line_length;
-	            batch_sample_count++;
+	            batch_ecg_count++;
+	            batch_record_count++;
 	        }
 
 	        /*
 	         * Do not attempt a zero-length USB transfer.
 	         */
-	        if (batch_sample_count == 0U)
+	        if (batch_record_count == 0U)
 	        {
 	            continue;
 	        }
@@ -307,7 +395,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            (_ux_system_slave->ux_system_slave_device
 	                 .ux_slave_device_state != UX_DEVICE_CONFIGURED))
 	        {
-	            usb_sample_error_count += batch_sample_count;
+	        	usb_sample_error_count += batch_record_count;
 	            stream_started = 0U;
 	            continue;
 	        }
@@ -320,7 +408,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	         */
 	        status = ux_device_class_cdc_acm_write(
 	            g_cdc_acm,
-	            ecg_usb_batch_buffer,
+	            usb_batch_buffer,
 	            (ULONG)batch_length,
 	            &actual_length);
 
@@ -331,12 +419,12 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            (actual_length == (ULONG)batch_length))
 	        {
 	            usb_batch_send_count++;
-	            usb_sample_send_count += batch_sample_count;
+	            usb_sample_send_count += batch_record_count;
 	        }
 	        else
 	        {
 	            usb_batch_error_count++;
-	            usb_sample_error_count += batch_sample_count;
+	            usb_sample_error_count += batch_record_count;
 
 	            stream_started = 0U;
 	            tx_thread_sleep(1);
