@@ -595,15 +595,6 @@ static int32_t pt_lowpass_buffer[ECG_PT_LOWPASS_WINDOW_SAMPLES];
 static uint32_t pt_mwi_buffer[ECG_PT_MWI_WINDOW_SAMPLES];
 static PT_HistoryEntry pt_history[PT_HISTORY_SIZE];
 
-static uint32_t PT_Abs32(int32_t value)
-{
-    if (value >= 0)
-    {
-        return (uint32_t)value;
-    }
-    return (value == INT32_MIN) ? 0x7FFFFFFFU : (uint32_t)(-value);
-}
-
 static void PT_EmitPeak(uint32_t detection_counter,
                         uint32_t integrated_peak,
                         uint32_t threshold,
@@ -622,7 +613,7 @@ static void PT_EmitPeak(uint32_t detection_counter,
         detection_counter - ECG_PT_RPEAK_LOOKBACK_SAMPLES : 1U;
     uint32_t last = detection_counter;
     uint32_t best_counter = detection_counter;
-    uint32_t best_abs = 0U;
+    int32_t best_positive = 0;
     ECG_ProcessingSample best = {0U, 0U, 0U, 0};
     ECG_RPeakEvent event;
 
@@ -631,16 +622,17 @@ static void PT_EmitPeak(uint32_t detection_counter,
         PT_HistoryEntry *entry = &pt_history[counter % PT_HISTORY_SIZE];
         if (entry->sample.sample_counter == counter)
         {
-            uint32_t magnitude = PT_Abs32(entry->localization_value);
-            if (magnitude > best_abs)
+            /* CH2 is configured with an upright R wave.  Do not let a
+             * larger, negative S wave win merely because of its magnitude. */
+            if (entry->localization_value > best_positive)
             {
-                best_abs = magnitude;
+                best_positive = entry->localization_value;
                 best_counter = counter;
                 best = entry->sample;
             }
         }
     }
-    if ((best_abs == 0U) ||
+    if ((best_positive <= 0) ||
         ((*last_peak_counter != 0U) &&
          ((best_counter - *last_peak_counter) < ECG_PT_REFRACTORY_SAMPLES)))
     {

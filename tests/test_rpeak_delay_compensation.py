@@ -39,19 +39,31 @@ def detector_candidate(samples):
 
     candidate = max(range(len(mwi_values)), key=mwi_values.__getitem__) + 1
     first = max(1, candidate - LOOKBACK)
+    # CH2 is upright: maximize the signed baseline-removed sample so a
+    # larger negative S wave cannot displace the positive R marker.
     corrected = max(range(first, candidate + 1),
-                    key=lambda count: abs(highpass_history[count - 1]))
-    return candidate, corrected
+                    key=lambda count: highpass_history[count - 1])
+    return candidate, corrected, samples[corrected - 1]
 
 
 def main():
     r_peak = 501
     samples = [0] * 1000
     samples[r_peak - 1] = 1_000_000
-    candidate, corrected = detector_candidate(samples)
+    candidate, corrected, amplitude = detector_candidate(samples)
     assert candidate > r_peak, (candidate, r_peak)
     assert corrected == r_peak, (corrected, r_peak)
-    print(f"candidate_delay_samples={candidate-r_peak}, corrected_error_samples=0")
+    assert amplitude == 1_000_000
+
+    s_peak = r_peak + 10
+    samples = [0] * 1000
+    samples[r_peak - 1] = 1_000_000
+    samples[s_peak - 1] = -1_500_000
+    candidate, corrected, amplitude = detector_candidate(samples)
+    assert candidate >= s_peak, (candidate, s_peak)
+    assert corrected == r_peak, (corrected, r_peak, s_peak)
+    assert amplitude == 1_000_000, amplitude
+    print(f"biphasic_candidate={candidate}, selected_positive_r={corrected}")
 
 
 if __name__ == "__main__":
