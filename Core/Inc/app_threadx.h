@@ -148,7 +148,13 @@ typedef struct
 #define ECG_PT_LOWPASS_WINDOW_SAMPLES  ((ECG_SAMPLE_RATE_HZ * 24U) / 1000U)
 #define ECG_PT_MWI_WINDOW_SAMPLES      ((ECG_SAMPLE_RATE_HZ * 150U) / 1000U)
 #define ECG_PT_REFRACTORY_SAMPLES      ((ECG_SAMPLE_RATE_HZ * 200U) / 1000U)
-#define ECG_PT_SEARCH_RADIUS_SAMPLES   ((ECG_SAMPLE_RATE_HZ * 60U) / 1000U)
+/*
+ * The high-pass stage is x[n] - moving_average(x[n]); its direct path means
+ * that adding half of the baseline window to a group-delay estimate is
+ * incorrect.  Refine each integrated-domain candidate against the original
+ * ECG in this causal look-back interval instead.
+ */
+#define ECG_PT_RPEAK_LOOKBACK_SAMPLES  ((ECG_SAMPLE_RATE_HZ * 200U) / 1000U)
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/

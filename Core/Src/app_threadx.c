@@ -583,14 +583,11 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 }
 
 #define PT_HISTORY_SIZE 256U
-#define PT_FILTER_DELAY_SAMPLES \
-    (((ECG_PT_BASELINE_WINDOW_SAMPLES - 1U) / 2U) + \
-     ((ECG_PT_LOWPASS_WINDOW_SAMPLES - 1U) / 2U) + 2U + \
-     ((ECG_PT_MWI_WINDOW_SAMPLES - 1U) / 2U))
 
 typedef struct
 {
     ECG_ProcessingSample sample;
+    int32_t localization_value;
 } PT_HistoryEntry;
 
 static int32_t pt_baseline_buffer[ECG_PT_BASELINE_WINDOW_SAMPLES];
@@ -614,10 +611,17 @@ static void PT_EmitPeak(uint32_t detection_counter,
                         uint64_t *last_peak_timestamp,
                         uint8_t searchback)
 {
-    uint32_t center = detection_counter - PT_FILTER_DELAY_SAMPLES;
-    uint32_t first = center - ECG_PT_SEARCH_RADIUS_SAMPLES;
-    uint32_t last = center + ECG_PT_SEARCH_RADIUS_SAMPLES;
-    uint32_t best_counter = center;
+    /*
+     * Do not subtract a summed "group delay" here.  The baseline-removal
+     * filter contains an undelayed x[n] path, and the nonlinear square/MWI
+     * peak has no fixed linear-phase delay.  Searching only already acquired
+     * raw samples also guarantees that the emitted timestamp is an actual
+     * ECG timestamp rather than a calculated approximation.
+     */
+    uint32_t first = (detection_counter > ECG_PT_RPEAK_LOOKBACK_SAMPLES) ?
+        detection_counter - ECG_PT_RPEAK_LOOKBACK_SAMPLES : 1U;
+    uint32_t last = detection_counter;
+    uint32_t best_counter = detection_counter;
     uint32_t best_abs = 0U;
     ECG_ProcessingSample best = {0U, 0U, 0U, 0};
     ECG_RPeakEvent event;
@@ -627,7 +631,7 @@ static void PT_EmitPeak(uint32_t detection_counter,
         PT_HistoryEntry *entry = &pt_history[counter % PT_HISTORY_SIZE];
         if (entry->sample.sample_counter == counter)
         {
-            uint32_t magnitude = PT_Abs32(entry->sample.ecg_raw);
+            uint32_t magnitude = PT_Abs32(entry->localization_value);
             if (magnitude > best_abs)
             {
                 best_abs = magnitude;
@@ -698,8 +702,6 @@ void ecg_processing_thread_entry(ULONG thread_input)
         }
         Timestamp_CaptureFromISR(&start_high, &start_low);
         ecg_processing_input_count++;
-        pt_history[input.sample_counter % PT_HISTORY_SIZE].sample = input;
-
         uint32_t bi = input.sample_counter % ECG_PT_BASELINE_WINDOW_SAMPLES;
         baseline_sum += input.ecg_raw - pt_baseline_buffer[bi];
         pt_baseline_buffer[bi] = input.ecg_raw;
@@ -711,6 +713,9 @@ void ecg_processing_thread_entry(ULONG thread_input)
         pt_lowpass_buffer[li] = highpass;
         int32_t bandpass = (int32_t)(lowpass_sum /
                                     (int32_t)ECG_PT_LOWPASS_WINDOW_SAMPLES);
+        pt_history[input.sample_counter % PT_HISTORY_SIZE].sample = input;
+        pt_history[input.sample_counter % PT_HISTORY_SIZE].localization_value =
+            highpass;
 
         int32_t derivative = (int32_t)(((2LL * bandpass) +
                               derivative_history[0] -
@@ -731,8 +736,7 @@ void ecg_processing_thread_entry(ULONG thread_input)
         uint32_t mwi = (uint32_t)(mwi_sum / ECG_PT_MWI_WINDOW_SAMPLES);
 
         if ((previous_mwi > previous2_mwi) && (previous_mwi >= mwi) &&
-            (input.sample_counter > (PT_FILTER_DELAY_SAMPLES +
-                                     ECG_PT_SEARCH_RADIUS_SAMPLES)))
+            (input.sample_counter > ECG_PT_RPEAK_LOOKBACK_SAMPLES))
         {
             uint32_t candidate_counter = input.sample_counter - 1U;
             if ((threshold == 0U) || (previous_mwi >= threshold))
