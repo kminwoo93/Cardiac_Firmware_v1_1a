@@ -240,6 +240,7 @@ VOID usbx_cdc_acm_read_thread_entry(ULONG thread_input)
 VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
 	ECG_Sample sample;
+	ECG_RPeakEvent rpeak_event;
 	/*
 	     * One SCG message received from scg_sample_queue.
 	     */
@@ -398,6 +399,51 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            batch_length += (uint32_t)line_length;
 	            batch_ecg_count++;
 	            batch_record_count++;
+
+                /*
+                 * Drain pending detector events without ever blocking the
+                 * processing thread.  R records are:
+                 * R,timestamp_us,sample_counter,amplitude,rr_us,bpm,
+                 * confidence_q15,adaptive_threshold
+                 */
+                while ((USB_BATCH_BUFFER_SIZE - batch_length) >=
+                       USB_CSV_ROW_RESERVE)
+                {
+                    if (tx_queue_receive(&ecg_rpeak_queue, &rpeak_event,
+                                         TX_NO_WAIT) != TX_SUCCESS)
+                    {
+                        break;
+                    }
+                    uint64_t rpeak_timestamp =
+                        ((uint64_t)rpeak_event.timestamp_high << 32) |
+                        rpeak_event.timestamp_low;
+                    if (USB_UInt64ToDecimal(rpeak_timestamp, timestamp_text,
+                                            sizeof(timestamp_text)) == 0U)
+                    {
+                        usb_sample_error_count++;
+                        break;
+                    }
+                    line_length = snprintf(
+                        (char *)&usb_batch_buffer[batch_length],
+                        USB_BATCH_BUFFER_SIZE - batch_length,
+                        "R,%s,%lu,%ld,%lu,%lu,%lu,%lu\r\n",
+                        timestamp_text,
+                        (unsigned long)rpeak_event.sample_counter,
+                        (long)rpeak_event.amplitude,
+                        (unsigned long)rpeak_event.rr_interval_us,
+                        (unsigned long)rpeak_event.heart_rate_bpm,
+                        (unsigned long)rpeak_event.confidence_q15,
+                        (unsigned long)rpeak_event.adaptive_threshold);
+                    if ((line_length <= 0) ||
+                        ((uint32_t)line_length >=
+                         (USB_BATCH_BUFFER_SIZE - batch_length)))
+                    {
+                        usb_sample_error_count++;
+                        break;
+                    }
+                    batch_length += (uint32_t)line_length;
+                    batch_record_count++;
+                }
 
 	            /*
 	             * Drain only the SCG samples that fit in this batch, up to the
