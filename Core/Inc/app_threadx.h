@@ -85,6 +85,28 @@ typedef struct
     uint32_t timestamp_low;
     uint32_t timestamp_high;
 } SensorIrqTimestamp;
+
+/* Compact, naturally 32-bit aligned acquisition-to-detector message. */
+typedef struct
+{
+    uint32_t sample_counter;
+    uint32_t timestamp_low;
+    uint32_t timestamp_high;
+    int32_t ecg_raw;
+} ECG_ProcessingSample;
+
+/* USB record type "R".  RR is microseconds and confidence is Q15. */
+typedef struct
+{
+    uint32_t sample_counter;
+    uint32_t timestamp_low;
+    uint32_t timestamp_high;
+    int32_t amplitude;
+    uint32_t rr_interval_us;
+    uint32_t heart_rate_bpm;
+    uint32_t confidence_q15;
+    uint32_t adaptive_threshold;
+} ECG_RPeakEvent;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -111,6 +133,22 @@ typedef struct
 
 #define SCG_THREAD_STACK_SIZE    1024U
 #define SCG_THREAD_PRIORITY      5U
+
+/* ADS1292R CONFIG1=0x02 selects 500 samples/s. */
+#define ECG_SAMPLE_RATE_HZ                 500U
+#define ECG_PROCESSING_QUEUE_CAPACITY      128U
+#define ECG_PROCESSING_QUEUE_MESSAGE_SIZE  4U
+#define ECG_RPEAK_QUEUE_CAPACITY           32U
+#define ECG_RPEAK_QUEUE_MESSAGE_SIZE       8U
+#define ECG_PROCESSING_THREAD_STACK_SIZE   2048U
+#define ECG_PROCESSING_THREAD_PRIORITY     6U
+
+/* Integer Pan-Tompkins timing parameters (all derived from fs). */
+#define ECG_PT_BASELINE_WINDOW_SAMPLES ((ECG_SAMPLE_RATE_HZ * 200U) / 1000U)
+#define ECG_PT_LOWPASS_WINDOW_SAMPLES  ((ECG_SAMPLE_RATE_HZ * 24U) / 1000U)
+#define ECG_PT_MWI_WINDOW_SAMPLES      ((ECG_SAMPLE_RATE_HZ * 150U) / 1000U)
+#define ECG_PT_REFRACTORY_SAMPLES      ((ECG_SAMPLE_RATE_HZ * 200U) / 1000U)
+#define ECG_PT_SEARCH_RADIUS_SAMPLES   ((ECG_SAMPLE_RATE_HZ * 60U) / 1000U)
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -142,8 +180,11 @@ void ecg_acquisition_thread_entry(ULONG thread_input);
 /* USER CODE BEGIN EFP */
 extern TX_QUEUE ecg_sample_queue;
 extern TX_QUEUE scg_sample_queue;
+extern TX_QUEUE ecg_processing_queue;
+extern TX_QUEUE ecg_rpeak_queue;
 
 void scg_acquisition_thread_entry(ULONG thread_input);
+void ecg_processing_thread_entry(ULONG thread_input);
 /* USER CODE END EFP */
 
 /* USER CODE BEGIN 1 */
