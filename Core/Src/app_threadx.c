@@ -48,6 +48,8 @@ TX_THREAD tx_app_thread;
 /* USER CODE BEGIN PV */
 TX_QUEUE ecg_sample_queue;
 TX_QUEUE scg_sample_queue;
+TX_QUEUE ecg_processing_queue;
+TX_QUEUE ecg_rpeak_queue;
 /*
  * Timestamp event queues written by the EXTI callbacks
  * and read by the acquisition threads.
@@ -61,6 +63,10 @@ static ULONG ecg_queue_storage[
 static ULONG scg_queue_storage[
     SCG_QUEUE_CAPACITY * SCG_QUEUE_MESSAGE_SIZE
 ];
+static ULONG ecg_processing_queue_storage[
+    ECG_PROCESSING_QUEUE_CAPACITY * ECG_PROCESSING_QUEUE_MESSAGE_SIZE];
+static ULONG ecg_rpeak_queue_storage[
+    ECG_RPEAK_QUEUE_CAPACITY * ECG_RPEAK_QUEUE_MESSAGE_SIZE];
 /*
  * Static storage for timestamp queues.
  *
@@ -97,6 +103,15 @@ volatile UINT scg_queue_last_status = TX_SUCCESS;
  * SCG acquisition thread control block.
  */
 TX_THREAD scg_acquisition_thread;
+TX_THREAD ecg_processing_thread;
+
+volatile uint32_t ecg_processing_input_count = 0U;
+volatile uint32_t ecg_rpeak_detected_count = 0U;
+volatile uint32_t ecg_processing_queue_overflow_count = 0U;
+volatile uint32_t ecg_rejected_peak_count = 0U;
+volatile uint32_t ecg_searchback_detection_count = 0U;
+volatile uint32_t ecg_processing_max_execution_us = 0U;
+volatile uint32_t ecg_rpeak_queue_overflow_count = 0U;
 
 /*
  * Prevent EXTI callbacks from accessing timestamp queues
@@ -218,6 +233,48 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                       sizeof(ecg_queue_storage)) != TX_SUCCESS)
   {
       return TX_QUEUE_ERROR;
+  }
+
+  if ((sizeof(ECG_ProcessingSample) !=
+       (ECG_PROCESSING_QUEUE_MESSAGE_SIZE * sizeof(ULONG))) ||
+      (sizeof(ECG_RPeakEvent) !=
+       (ECG_RPEAK_QUEUE_MESSAGE_SIZE * sizeof(ULONG))))
+  {
+      return TX_SIZE_ERROR;
+  }
+
+  if (tx_queue_create(&ecg_processing_queue, "ecg_processing_queue",
+                      ECG_PROCESSING_QUEUE_MESSAGE_SIZE,
+                      ecg_processing_queue_storage,
+                      sizeof(ecg_processing_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  if (tx_queue_create(&ecg_rpeak_queue, "ecg_rpeak_queue",
+                      ECG_RPEAK_QUEUE_MESSAGE_SIZE,
+                      ecg_rpeak_queue_storage,
+                      sizeof(ecg_rpeak_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  CHAR *processing_stack_pointer;
+  if (tx_byte_allocate(byte_pool, (VOID **)&processing_stack_pointer,
+                       ECG_PROCESSING_THREAD_STACK_SIZE,
+                       TX_NO_WAIT) != TX_SUCCESS)
+  {
+      return TX_POOL_ERROR;
+  }
+  if (tx_thread_create(&ecg_processing_thread, "ecg_processing_thread",
+                       ecg_processing_thread_entry, 0U,
+                       processing_stack_pointer,
+                       ECG_PROCESSING_THREAD_STACK_SIZE,
+                       ECG_PROCESSING_THREAD_PRIORITY,
+                       ECG_PROCESSING_THREAD_PRIORITY,
+                       TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+  {
+      return TX_THREAD_ERROR;
   }
 
   /*
@@ -365,6 +422,7 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 {
   /* USER CODE BEGIN ecg_acquisition_thread_entry */
 	ECG_Sample sample;
+	ECG_ProcessingSample processing_sample;
 	SensorIrqTimestamp irq_timestamp;
 
 	ADS1292R_CH2FilterState ch2_filter;
@@ -482,6 +540,18 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    	        sample.ch2_all_filter =
 		    	            (int32_t)ch2_output.all_filter;
 
+                        processing_sample.sample_counter = sample_counter;
+                        processing_sample.timestamp_low = irq_timestamp.timestamp_low;
+                        processing_sample.timestamp_high = irq_timestamp.timestamp_high;
+                        processing_sample.ecg_raw = ecg_ch2_raw;
+                        if (tx_queue_send(&ecg_processing_queue,
+                                          &processing_sample,
+                                          TX_NO_WAIT) != TX_SUCCESS)
+                        {
+                            /* Drop newest: acquisition and USB streaming never wait. */
+                            ecg_processing_queue_overflow_count++;
+                        }
+
 		    	        /*
 		    	         * Do not block ECG acquisition when queue is full.
 		    	         */
@@ -510,6 +580,218 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 	  }
 
   /* USER CODE END ecg_acquisition_thread_entry */
+}
+
+#define PT_HISTORY_SIZE 256U
+
+typedef struct
+{
+    ECG_ProcessingSample sample;
+    int32_t localization_value;
+} PT_HistoryEntry;
+
+static int32_t pt_baseline_buffer[ECG_PT_BASELINE_WINDOW_SAMPLES];
+static int32_t pt_lowpass_buffer[ECG_PT_LOWPASS_WINDOW_SAMPLES];
+static uint32_t pt_mwi_buffer[ECG_PT_MWI_WINDOW_SAMPLES];
+static PT_HistoryEntry pt_history[PT_HISTORY_SIZE];
+
+static uint32_t PT_Abs32(int32_t value)
+{
+    if (value >= 0)
+    {
+        return (uint32_t)value;
+    }
+    return (value == INT32_MIN) ? 0x7FFFFFFFU : (uint32_t)(-value);
+}
+
+static void PT_EmitPeak(uint32_t detection_counter,
+                        uint32_t integrated_peak,
+                        uint32_t threshold,
+                        uint32_t *last_peak_counter,
+                        uint64_t *last_peak_timestamp,
+                        uint8_t searchback)
+{
+    /*
+     * Do not subtract a summed "group delay" here.  The baseline-removal
+     * filter contains an undelayed x[n] path, and the nonlinear square/MWI
+     * peak has no fixed linear-phase delay.  Searching only already acquired
+     * raw samples also guarantees that the emitted timestamp is an actual
+     * ECG timestamp rather than a calculated approximation.
+     */
+    uint32_t first = (detection_counter > ECG_PT_RPEAK_LOOKBACK_SAMPLES) ?
+        detection_counter - ECG_PT_RPEAK_LOOKBACK_SAMPLES : 1U;
+    uint32_t last = detection_counter;
+    uint32_t best_counter = detection_counter;
+    uint32_t best_abs = 0U;
+    ECG_ProcessingSample best = {0U, 0U, 0U, 0};
+    ECG_RPeakEvent event;
+
+    for (uint32_t counter = first; counter <= last; counter++)
+    {
+        PT_HistoryEntry *entry = &pt_history[counter % PT_HISTORY_SIZE];
+        if (entry->sample.sample_counter == counter)
+        {
+            uint32_t magnitude = PT_Abs32(entry->localization_value);
+            if (magnitude > best_abs)
+            {
+                best_abs = magnitude;
+                best_counter = counter;
+                best = entry->sample;
+            }
+        }
+    }
+    if ((best_abs == 0U) ||
+        ((*last_peak_counter != 0U) &&
+         ((best_counter - *last_peak_counter) < ECG_PT_REFRACTORY_SAMPLES)))
+    {
+        ecg_rejected_peak_count++;
+        return;
+    }
+
+    uint64_t timestamp = ((uint64_t)best.timestamp_high << 32) |
+                         (uint64_t)best.timestamp_low;
+    uint64_t rr = (*last_peak_timestamp == 0ULL) ? 0ULL :
+                  (timestamp - *last_peak_timestamp);
+    event.sample_counter = best_counter;
+    event.timestamp_low = best.timestamp_low;
+    event.timestamp_high = best.timestamp_high;
+    event.amplitude = best.ecg_raw;
+    event.rr_interval_us = (rr > UINT32_MAX) ? UINT32_MAX : (uint32_t)rr;
+    event.heart_rate_bpm = (rr == 0ULL) ? 0U : (uint32_t)(60000000ULL / rr);
+    event.confidence_q15 = ((uint64_t)integrated_peak >=
+                            ((uint64_t)threshold * 2ULL)) ? 32767U :
+        (uint32_t)(((uint64_t)integrated_peak * 32767ULL) /
+                   ((threshold == 0U) ? 1U : ((uint64_t)threshold * 2ULL)));
+    event.adaptive_threshold = threshold;
+
+    if (tx_queue_send(&ecg_rpeak_queue, &event, TX_NO_WAIT) != TX_SUCCESS)
+    {
+        ecg_rpeak_queue_overflow_count++;
+    }
+    ecg_rpeak_detected_count++;
+    if (searchback != 0U)
+    {
+        ecg_searchback_detection_count++;
+    }
+    *last_peak_counter = best_counter;
+    *last_peak_timestamp = timestamp;
+}
+
+void ecg_processing_thread_entry(ULONG thread_input)
+{
+    ECG_ProcessingSample input;
+    int64_t baseline_sum = 0;
+    int64_t lowpass_sum = 0;
+    uint64_t mwi_sum = 0ULL;
+    int32_t derivative_history[4] = {0, 0, 0, 0};
+    uint32_t signal_level = 0U, noise_level = 0U, threshold = 0U;
+    uint32_t previous_mwi = 0U, previous2_mwi = 0U;
+    uint32_t last_peak_counter = 0U;
+    uint64_t last_peak_timestamp = 0ULL;
+    uint32_t rr_average = ECG_SAMPLE_RATE_HZ;
+    uint32_t rejected_value = 0U, rejected_counter = 0U;
+    TX_PARAMETER_NOT_USED(thread_input);
+
+    while (1)
+    {
+        uint32_t start_high, start_low, end_high, end_low;
+        if (tx_queue_receive(&ecg_processing_queue, &input,
+                             TX_WAIT_FOREVER) != TX_SUCCESS)
+        {
+            continue;
+        }
+        Timestamp_CaptureFromISR(&start_high, &start_low);
+        ecg_processing_input_count++;
+        uint32_t bi = input.sample_counter % ECG_PT_BASELINE_WINDOW_SAMPLES;
+        baseline_sum += input.ecg_raw - pt_baseline_buffer[bi];
+        pt_baseline_buffer[bi] = input.ecg_raw;
+        int32_t highpass = input.ecg_raw -
+            (int32_t)(baseline_sum / (int32_t)ECG_PT_BASELINE_WINDOW_SAMPLES);
+
+        uint32_t li = input.sample_counter % ECG_PT_LOWPASS_WINDOW_SAMPLES;
+        lowpass_sum += highpass - pt_lowpass_buffer[li];
+        pt_lowpass_buffer[li] = highpass;
+        int32_t bandpass = (int32_t)(lowpass_sum /
+                                    (int32_t)ECG_PT_LOWPASS_WINDOW_SAMPLES);
+        pt_history[input.sample_counter % PT_HISTORY_SIZE].sample = input;
+        pt_history[input.sample_counter % PT_HISTORY_SIZE].localization_value =
+            highpass;
+
+        int32_t derivative = (int32_t)(((2LL * bandpass) +
+                              derivative_history[0] -
+                              derivative_history[2] -
+                              (2LL * derivative_history[3])) / 8LL);
+        derivative_history[3] = derivative_history[2];
+        derivative_history[2] = derivative_history[1];
+        derivative_history[1] = derivative_history[0];
+        derivative_history[0] = bandpass;
+        int64_t scaled = derivative / 256;
+        uint64_t squared64 = (uint64_t)(scaled * scaled);
+        uint32_t squared = (squared64 > UINT32_MAX) ? UINT32_MAX :
+                           (uint32_t)squared64;
+        uint32_t mi = input.sample_counter % ECG_PT_MWI_WINDOW_SAMPLES;
+        mwi_sum += squared;
+        mwi_sum -= pt_mwi_buffer[mi];
+        pt_mwi_buffer[mi] = squared;
+        uint32_t mwi = (uint32_t)(mwi_sum / ECG_PT_MWI_WINDOW_SAMPLES);
+
+        if ((previous_mwi > previous2_mwi) && (previous_mwi >= mwi) &&
+            (input.sample_counter > ECG_PT_RPEAK_LOOKBACK_SAMPLES))
+        {
+            uint32_t candidate_counter = input.sample_counter - 1U;
+            if ((threshold == 0U) || (previous_mwi >= threshold))
+            {
+                uint32_t old_peak = last_peak_counter;
+                PT_EmitPeak(candidate_counter, previous_mwi, threshold,
+                            &last_peak_counter, &last_peak_timestamp, 0U);
+                signal_level = signal_level - (signal_level >> 3) +
+                               (previous_mwi >> 3);
+                if ((old_peak != 0U) && (last_peak_counter != old_peak))
+                {
+                    uint32_t current_rr = last_peak_counter - old_peak;
+                    rr_average = rr_average - (rr_average >> 3) +
+                                 (current_rr >> 3);
+                }
+                rejected_value = 0U;
+            }
+            else
+            {
+                noise_level = noise_level - (noise_level >> 3) +
+                              (previous_mwi >> 3);
+                ecg_rejected_peak_count++;
+                if (previous_mwi > rejected_value)
+                {
+                    rejected_value = previous_mwi;
+                    rejected_counter = candidate_counter;
+                }
+            }
+            threshold = (signal_level > noise_level) ?
+                noise_level + ((signal_level - noise_level) >> 2) :
+                noise_level;
+        }
+
+        if ((last_peak_counter != 0U) && (rejected_value > (threshold >> 1)) &&
+            ((input.sample_counter - last_peak_counter) >
+             ((rr_average * 166U) / 100U)))
+        {
+            PT_EmitPeak(rejected_counter, rejected_value, threshold,
+                        &last_peak_counter, &last_peak_timestamp, 1U);
+            signal_level = signal_level - (signal_level >> 3) +
+                           (rejected_value >> 3);
+            rejected_value = 0U;
+        }
+        previous2_mwi = previous_mwi;
+        previous_mwi = mwi;
+
+        Timestamp_CaptureFromISR(&end_high, &end_low);
+        uint64_t elapsed = (((uint64_t)end_high << 32) | end_low) -
+                           (((uint64_t)start_high << 32) | start_low);
+        if (elapsed > ecg_processing_max_execution_us)
+        {
+            ecg_processing_max_execution_us =
+                (elapsed > UINT32_MAX) ? UINT32_MAX : (uint32_t)elapsed;
+        }
+    }
 }
 
   /**
