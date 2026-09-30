@@ -40,13 +40,17 @@ USBX/App/app_usbx_device.o: ../USBX/App/app_usbx_device.c \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_tim.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_tim_ex.h \
+ ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_uart.h \
+ ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_uart_ex.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h \
  ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_exti.h \
  ../AZURE_RTOS/App/app_azure_rtos_config.h \
  ../Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32.h \
- ../Core/Inc/main.h
+ ../Core/Inc/main.h ../STM32WB05N/Target/hci_tl_interface.h \
+ ../Core/Inc/custom_bus.h ../Core/Inc/custom_conf.h \
+ ../Core/Inc/custom_errno.h
 ../USBX/App/app_usbx_device.h:
 ../Middlewares/ST/usbx/common/core/inc/ux_api.h:
 ../Middlewares/ST/usbx/ports/generic/inc/ux_port.h:
@@ -90,6 +94,8 @@ USBX/App/app_usbx_device.o: ../USBX/App/app_usbx_device.c \
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_spi_ex.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_tim.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_tim_ex.h:
+../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_uart.h:
+../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_uart_ex.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_ll_usb.h:
 ../Drivers/STM32U5xx_HAL_Driver/Inc/stm32u5xx_hal_pcd_ex.h:
@@ -97,3 +103,7 @@ USBX/App/app_usbx_device.o: ../USBX/App/app_usbx_device.c \
 ../AZURE_RTOS/App/app_azure_rtos_config.h:
 ../Middlewares/ST/usbx/common/usbx_stm32_device_controllers/ux_dcd_stm32.h:
 ../Core/Inc/main.h:
+../STM32WB05N/Target/hci_tl_interface.h:
+../Core/Inc/custom_bus.h:
+../Core/Inc/custom_conf.h:
+../Core/Inc/custom_errno.h:

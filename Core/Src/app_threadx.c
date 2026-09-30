@@ -45,6 +45,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 TX_THREAD tx_app_thread;
+TX_SEMAPHORE tx_app_semaphore;
 /* USER CODE BEGIN PV */
 TX_QUEUE ecg_sample_queue;
 TX_QUEUE scg_sample_queue;
@@ -211,6 +212,12 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                        TX_APP_THREAD_TIME_SLICE, TX_APP_THREAD_AUTO_START) != TX_SUCCESS)
   {
     return TX_THREAD_ERROR;
+  }
+
+  /* Create ecg_drdy_semaphore.  */
+  if (tx_semaphore_create(&tx_app_semaphore, "ecg_drdy_semaphore", 0) != TX_SUCCESS)
+  {
+    return TX_SEMAPHORE_ERROR;
   }
 
   /* USER CODE BEGIN App_ThreadX_Init */
@@ -582,6 +589,27 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
   /* USER CODE END ecg_acquisition_thread_entry */
 }
 
+  /**
+  * @brief  Function that implements the kernel's initialization.
+  * @param  None
+  * @retval None
+  */
+void MX_ThreadX_Init(void)
+{
+  /* USER CODE BEGIN Before_Kernel_Start */
+
+  /* USER CODE END Before_Kernel_Start */
+
+  tx_kernel_enter();
+
+  /* USER CODE BEGIN Kernel_Start_Error */
+
+  /* USER CODE END Kernel_Start_Error */
+}
+
+/* USER CODE BEGIN 1 */
+
+
 #define PT_HISTORY_SIZE 256U
 
 typedef struct
@@ -786,25 +814,7 @@ void ecg_processing_thread_entry(ULONG thread_input)
     }
 }
 
-  /**
-  * @brief  Function that implements the kernel's initialization.
-  * @param  None
-  * @retval None
-  */
-void MX_ThreadX_Init(void)
-{
-  /* USER CODE BEGIN Before_Kernel_Start */
 
-  /* USER CODE END Before_Kernel_Start */
-
-  tx_kernel_enter();
-
-  /* USER CODE BEGIN Kernel_Start_Error */
-
-  /* USER CODE END Kernel_Start_Error */
-}
-
-/* USER CODE BEGIN 1 */
 
 /*
  * SCG acquisition thread.

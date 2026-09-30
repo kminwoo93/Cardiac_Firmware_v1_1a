@@ -10,11 +10,16 @@ RM := rm -rf
 # All of the sources participating in the build are defined here
 -include sources.mk
 -include USBX/App/subdir.mk
+-include STM32WB05N/Target/subdir.mk
 -include Middlewares/ST/usbx/common/usbx_stm32_device_controllers/subdir.mk
 -include Middlewares/ST/usbx/common/usbx_device_classes/src/subdir.mk
 -include Middlewares/ST/usbx/common/core/src/subdir.mk
 -include Middlewares/ST/threadx/ports/cortex_m33/gnu/src/subdir.mk
 -include Middlewares/ST/threadx/common/src/subdir.mk
+-include Middlewares/ST/STM32WB05N/utils/subdir.mk
+-include Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/subdir.mk
+-include Middlewares/ST/STM32WB05N/hci/controller/subdir.mk
+-include Middlewares/ST/STM32WB05N/hci/subdir.mk
 -include Drivers/STM32U5xx_HAL_Driver/Src/subdir.mk
 -include Core/Startup/subdir.mk
 -include Core/Src/subdir.mk

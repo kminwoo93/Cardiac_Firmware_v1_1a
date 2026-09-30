@@ -29,6 +29,7 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 #include "stm32u5xx_hal.h"
 
+#include "hci_tl_interface.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -63,6 +64,8 @@ void Timestamp_CaptureFromISR(
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define WB_BOOT_Pin GPIO_PIN_0
+#define WB_BOOT_GPIO_Port GPIOA
 #define WB_RSTN_Pin GPIO_PIN_1
 #define WB_RSTN_GPIO_Port GPIOA
 #define CS_ADS_Pin GPIO_PIN_4

@@ -26,10 +26,15 @@ AZURE_RTOS/App \
 Core/Src \
 Core/Startup \
 Drivers/STM32U5xx_HAL_Driver/Src \
+Middlewares/ST/STM32WB05N/hci/controller \
+Middlewares/ST/STM32WB05N/hci \
+Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic \
+Middlewares/ST/STM32WB05N/utils \
 Middlewares/ST/threadx/common/src \
 Middlewares/ST/threadx/ports/cortex_m33/gnu/src \
 Middlewares/ST/usbx/common/core/src \
 Middlewares/ST/usbx/common/usbx_device_classes/src \
 Middlewares/ST/usbx/common/usbx_stm32_device_controllers \
+STM32WB05N/Target \
 USBX/App \
 

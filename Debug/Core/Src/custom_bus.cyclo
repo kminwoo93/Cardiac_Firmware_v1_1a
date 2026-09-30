@@ -1,0 +1,9 @@
+../Core/Src/custom_bus.c:87:9:BSP_USART2_Init	5
+../Core/Src/custom_bus.c:127:9:BSP_USART2_DeInit	4
+../Core/Src/custom_bus.c:154:9:BSP_USART2_Send	2
+../Core/Src/custom_bus.c:171:10:BSP_USART2_Recv	2
+../Core/Src/custom_bus.c:188:10:BSP_USART2_Recv_DMA	2
+../Core/Src/custom_bus.c:257:9:BSP_GetTick	1
+../Core/Src/custom_bus.c:263:26:MX_USART2_UART_Init	5
+../Core/Src/custom_bus.c:304:13:USART2_MspInit	1
+../Core/Src/custom_bus.c:387:13:USART2_MspDeInit	1

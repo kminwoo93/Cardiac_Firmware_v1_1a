@@ -1,0 +1,9 @@
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:58:12:verify_packet	5
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:93:13:send_cmd	4
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:132:13:move_list	2
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:149:13:free_event_list	2
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:161:6:hci_init	5
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:193:6:hci_register_io_bus	1
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:203:5:hci_send_req	19
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:343:6:hci_user_evt_proc	3
+../Middlewares/ST/STM32WB05N/hci/hci_tl_patterns/Basic/hci_tl.c:361:9:hci_notify_asynch_evt	5

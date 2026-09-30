@@ -1,0 +1,12 @@
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:32:6:list_init_head	16	static
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:38:9:list_is_empty	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:60:6:list_insert_head	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:74:6:list_insert_tail	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:88:6:list_remove_node	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:100:6:list_remove_head	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:114:6:list_remove_tail	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:128:6:list_insert_node_after	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:142:6:list_insert_node_before	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:156:5:list_get_size	40	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:177:6:list_get_next_node	32	static,ignoring_inline_asm
+../Middlewares/ST/STM32WB05N/utils/ble_list.c:188:6:list_get_prev_node	32	static,ignoring_inline_asm

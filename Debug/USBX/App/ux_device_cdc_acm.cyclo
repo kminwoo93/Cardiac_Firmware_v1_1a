@@ -3,4 +3,4 @@
 ../USBX/App/ux_device_cdc_acm.c:134:6:USBD_CDC_ACM_ParameterChange	1
 ../USBX/App/ux_device_cdc_acm.c:155:17:USB_UInt64ToDecimal	7
 ../USBX/App/ux_device_cdc_acm.c:209:6:usbx_cdc_acm_read_thread_entry	2
-../USBX/App/ux_device_cdc_acm.c:240:6:usbx_cdc_acm_write_thread_entry	23
+../USBX/App/ux_device_cdc_acm.c:240:6:usbx_cdc_acm_write_thread_entry	28

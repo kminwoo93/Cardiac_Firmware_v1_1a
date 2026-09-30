@@ -1,0 +1,4 @@
+../Middlewares/ST/STM32WB05N/hci/hci_parser.c:38:6:hci_input_cmd	40	static
+../Middlewares/ST/STM32WB05N/hci/hci_parser.c:128:6:hci_input_event	32	static
+../Middlewares/ST/STM32WB05N/hci/hci_parser.c:207:6:packet_received	24	static
+../Middlewares/ST/STM32WB05N/hci/hci_parser.c:231:5:HCI_verify	32	static

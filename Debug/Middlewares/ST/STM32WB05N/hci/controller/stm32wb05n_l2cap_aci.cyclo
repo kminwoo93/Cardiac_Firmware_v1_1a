@@ -1,0 +1,9 @@
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:26:12:aci_l2cap_connection_parameter_update_req	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:63:12:aci_l2cap_connection_parameter_update_resp	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:111:12:aci_l2cap_cos_connection_req	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:151:12:aci_l2cap_cos_connection_resp	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:194:12:aci_l2cap_cos_flow_control_credits_ind	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:231:12:aci_l2cap_cos_disconnect_req	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:259:12:aci_l2cap_cos_sdu_data_transmit	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:295:12:aci_l2cap_cos_reconfigure_req	3
+../Middlewares/ST/STM32WB05N/hci/controller/stm32wb05n_l2cap_aci.c:334:12:aci_l2cap_cos_reconfigure_resp	3
