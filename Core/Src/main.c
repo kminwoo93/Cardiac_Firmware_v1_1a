@@ -143,7 +143,9 @@ int main(void)
   MX_TIM2_Init();
   MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
-  Cardiac_BLE_Init();
+  /*
+   * BLE initialization is done by ble_processing_thread.
+   */
   /*
    * Reset and start the common 1 MHz timestamp timer
    * before either sensor starts producing interrupts.

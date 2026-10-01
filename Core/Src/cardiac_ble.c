@@ -12,6 +12,8 @@
 #include "stm32wb05n_gap_aci.h"
 #include "stm32wb05n_gatt_aci.h"
 
+#include "tx_api.h"
+
 
 /* -------------------------------------------------------------------------- */
 /* Configuration                                                              */
@@ -34,11 +36,9 @@
 /* Maximum time to wait for ACI_BLUE_INITIALIZED after the hardware reset */
 #define CARDIAC_BLE_BOOT_TIMEOUT_MS          2000U
 
-/* BLE thread */
-#define CARDIAC_BLE_THREAD_STACK_SIZE        2048U
-#define CARDIAC_BLE_THREAD_PRIORITY          10U
-/* Fallback wake-up period in ticks, in case a notification is missed */
-#define CARDIAC_BLE_THREAD_POLL_TICKS        10U
+/* 2 s stabilization delay after HCI_Reset (same as ST SensorDemo) */
+#define CARDIAC_BLE_STABILIZATION_TICKS      (2U * TX_TIMER_TICKS_PER_SECOND)
+
 
 
 /* -------------------------------------------------------------------------- */
@@ -99,14 +99,10 @@ static uint8_t cardiac_bdaddr[CARDIAC_BDADDR_SIZE];
 
 static Advertising_Set_Parameters_t cardiac_adv_set_params[1];
 
-/* Advertising stops on connection and must be re-enabled from thread
-   context after a disconnection (not from the event callback, which runs
-   inside hci_user_evt_proc()). */
+/* Advertising stops on connection and must be re-enabled after a
+   disconnection, outside the event callback (which runs inside
+   hci_user_evt_proc()). */
 static volatile uint8_t cardiac_ble_restart_adv = 0;
-
-static TX_THREAD    cardiac_ble_thread;
-static TX_SEMAPHORE cardiac_ble_evt_sem;
-static volatile uint8_t cardiac_ble_evt_sem_ready = 0;
 
 
 /* -------------------------------------------------------------------------- */
@@ -117,7 +113,6 @@ static void Cardiac_BLE_UserEvtRx(void *pData);
 static tBleStatus Cardiac_BLE_StackInit(void);
 static tBleStatus Cardiac_BLE_StartAdvertising(void);
 static void Cardiac_BLE_WaitBoot(void);
-static VOID Cardiac_BLE_ThreadEntry(ULONG thread_input);
 
 
 /* -------------------------------------------------------------------------- */
@@ -174,8 +169,9 @@ void Cardiac_BLE_Init(void)
 
     /*
      * Same stabilization delay used by ST SensorDemo.
+     * Runs in the BLE thread: sleep instead of busy-waiting.
      */
-    HAL_Delay(2000);
+    tx_thread_sleep(CARDIAC_BLE_STABILIZATION_TICKS);
 
 
     /*
@@ -215,102 +211,36 @@ void Cardiac_BLE_Init(void)
 
 void Cardiac_BLE_Process(void)
 {
-    /*
-     * Process asynchronous HCI/BLE events.
-     * Called from the BLE thread.
-     */
-    hci_user_evt_proc();
-}
-
-
-UINT Cardiac_BLE_ThreadCreate(TX_BYTE_POOL *byte_pool)
-{
-    CHAR *stack_pointer;
-
-    if (tx_semaphore_create(&cardiac_ble_evt_sem,
-                            "ble_evt_semaphore",
-                            0U) != TX_SUCCESS)
-    {
-        return TX_SEMAPHORE_ERROR;
-    }
-
-    cardiac_ble_evt_sem_ready = 1U;
-
-    if (tx_byte_allocate(byte_pool,
-                         (VOID **)&stack_pointer,
-                         CARDIAC_BLE_THREAD_STACK_SIZE,
-                         TX_NO_WAIT) != TX_SUCCESS)
-    {
-        return TX_POOL_ERROR;
-    }
-
-    if (tx_thread_create(&cardiac_ble_thread,
-                         "ble_thread",
-                         Cardiac_BLE_ThreadEntry,
-                         0U,
-                         stack_pointer,
-                         CARDIAC_BLE_THREAD_STACK_SIZE,
-                         CARDIAC_BLE_THREAD_PRIORITY,
-                         CARDIAC_BLE_THREAD_PRIORITY,
-                         TX_NO_TIME_SLICE,
-                         TX_AUTO_START) != TX_SUCCESS)
-    {
-        return TX_THREAD_ERROR;
-    }
-
-    return TX_SUCCESS;
-}
-
-
-void Cardiac_BLE_RxNotify(void)
-{
-    /*
-     * Also called while Cardiac_BLE_Init() runs before the kernel starts,
-     * when the semaphore does not exist yet.
-     */
-    if (cardiac_ble_evt_sem_ready != 0U)
-    {
-        (void)tx_semaphore_put(&cardiac_ble_evt_sem);
-    }
-}
-
-
-/* -------------------------------------------------------------------------- */
-/* BLE thread                                                                 */
-/* -------------------------------------------------------------------------- */
-
-static VOID Cardiac_BLE_ThreadEntry(ULONG thread_input)
-{
     tBleStatus ret;
 
-    (void)thread_input;
+    /*
+     * Process asynchronous HCI/BLE events.
+     * Called continuously from the BLE thread.
+     */
+    hci_user_evt_proc();
 
-    for (;;)
+    if ((cardiac_ble_restart_adv != 0U) &&
+        (cardiac_ble_init_status == BLE_STATUS_SUCCESS))
     {
-        (void)tx_semaphore_get(&cardiac_ble_evt_sem,
-                               CARDIAC_BLE_THREAD_POLL_TICKS);
+        ret = aci_gap_set_advertising_enable(
+                ENABLE,
+                1,
+                cardiac_adv_set_params);
 
-        Cardiac_BLE_Process();
+        cardiac_ble_adv_restart_status = ret;
 
-        if ((cardiac_ble_restart_adv != 0U) &&
-            (cardiac_ble_init_status == BLE_STATUS_SUCCESS))
+        /* On failure, retry on the next call */
+        if (ret == BLE_STATUS_SUCCESS)
         {
-            ret = aci_gap_set_advertising_enable(
-                    ENABLE,
-                    1,
-                    cardiac_adv_set_params);
-
-            cardiac_ble_adv_restart_status = ret;
-
-            /* On failure, retry on the next wake-up */
-            if (ret == BLE_STATUS_SUCCESS)
-            {
-                cardiac_ble_restart_adv = 0U;
-            }
+            cardiac_ble_restart_adv = 0U;
         }
     }
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* Boot synchronization                                                       */
+/* -------------------------------------------------------------------------- */
 
 static void Cardiac_BLE_WaitBoot(void)
 {
@@ -322,6 +252,9 @@ static void Cardiac_BLE_WaitBoot(void)
            ((HAL_GetTick() - tickstart) < CARDIAC_BLE_BOOT_TIMEOUT_MS))
     {
         hci_user_evt_proc();
+
+        /* Runs in the BLE thread: let lower-priority threads run */
+        tx_thread_sleep(1);
     }
 }
 

@@ -23,7 +23,6 @@
 #include "hci_tl.h"
 #include "hci_parser.h"
 #include "hci_const.h"
-#include "cardiac_ble.h"
 
 /* Defines -------------------------------------------------------------------*/
 
@@ -247,9 +246,6 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     }
     /* Process received data that has been extracted from Rx User buffer */
     hci_input_event(pBufferReadyForUser, uwNbReceivedChars);
-
-    /* Wake up the BLE thread to process the queued events */
-    Cardiac_BLE_RxNotify();
 
     /* Swap buffers for next bytes to be processed */
     ptemp = pBufferReadyForUser;

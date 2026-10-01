@@ -13,7 +13,6 @@ extern "C" {
 #endif
 
 #include <stdint.h>
-#include "tx_api.h"
 
 /* BLE initialization result.
  * 0x00 = BLE_STATUS_SUCCESS
@@ -25,23 +24,15 @@ extern volatile uint8_t cardiac_ble_stage;
 extern volatile uint8_t  cardiac_ble_connected;
 extern volatile uint16_t cardiac_ble_conn_handle;
 
-/* Initialize STM32WB05N HCI transport and test communication with HCI Reset. */
+/* Initialize the STM32WB05N, the BLE stack and start advertising.
+ * Must be called from the BLE thread (uses tx_thread_sleep()).
+ */
 void Cardiac_BLE_Init(void);
 
 /* Process pending HCI events.
- * Called from the BLE thread.
+ * Must be called continuously from the BLE thread.
  */
 void Cardiac_BLE_Process(void);
-
-/* Create the BLE thread that processes HCI events.
- * Call from App_ThreadX_Init().
- */
-UINT Cardiac_BLE_ThreadCreate(TX_BYTE_POOL *byte_pool);
-
-/* Signal the BLE thread that HCI events were received.
- * Safe to call from interrupt context.
- */
-void Cardiac_BLE_RxNotify(void);
 
 #ifdef __cplusplus
 }

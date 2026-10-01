@@ -107,6 +107,11 @@ volatile UINT scg_queue_last_status = TX_SUCCESS;
 TX_THREAD scg_acquisition_thread;
 TX_THREAD ecg_processing_thread;
 
+/*
+ * BLE processing thread control block.
+ */
+TX_THREAD ble_processing_thread;
+
 volatile uint32_t ecg_processing_input_count = 0U;
 volatile uint32_t ecg_rpeak_detected_count = 0U;
 volatile uint32_t ecg_processing_queue_overflow_count = 0U;
@@ -418,14 +423,36 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   }
 
   /*
-   * Create the BLE thread that processes HCI events
-   * received from the STM32WB05N.
+   * Allocate BLE processing thread stack.
    */
-  ret = Cardiac_BLE_ThreadCreate(byte_pool);
+  CHAR *ble_stack_pointer;
 
-  if (ret != TX_SUCCESS)
+  if (tx_byte_allocate(
+          byte_pool,
+          (VOID **)&ble_stack_pointer,
+          BLE_PROCESSING_THREAD_STACK_SIZE,
+          TX_NO_WAIT) != TX_SUCCESS)
   {
-      return ret;
+      return TX_POOL_ERROR;
+  }
+
+  /*
+   * Create the BLE processing thread.
+   * It owns the STM32WB05N: initialization and HCI event processing.
+   */
+  if (tx_thread_create(
+          &ble_processing_thread,
+          "ble_processing_thread",
+          ble_processing_thread_entry,
+          0U,
+          ble_stack_pointer,
+          BLE_PROCESSING_THREAD_STACK_SIZE,
+          BLE_PROCESSING_THREAD_PRIORITY,
+          BLE_PROCESSING_THREAD_PRIORITY,
+          TX_NO_TIME_SLICE,
+          TX_AUTO_START) != TX_SUCCESS)
+  {
+      return TX_THREAD_ERROR;
   }
 
   /* USER CODE END App_ThreadX_Init */
@@ -1007,6 +1034,27 @@ void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
                 scg_timestamp_queue_drop_count++;
             }
         }
+    }
+}
+
+
+/**
+ * @brief BLE processing thread.
+ *
+ * Initializes the STM32WB05N once, then processes the HCI events
+ * it sends (connection, disconnection, GATT, ...).
+ */
+void ble_processing_thread_entry(ULONG thread_input)
+{
+    (void)thread_input;
+
+    Cardiac_BLE_Init();
+
+    while (1)
+    {
+        Cardiac_BLE_Process();
+
+        tx_thread_sleep(BLE_PROCESSING_THREAD_SLEEP_TICKS);
     }
 }
 
