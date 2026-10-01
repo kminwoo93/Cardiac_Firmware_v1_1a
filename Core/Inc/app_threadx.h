@@ -95,6 +95,20 @@ typedef struct
     int32_t ecg_raw;
 } ECG_ProcessingSample;
 
+/*
+ * SCG sample copy for the BLE thread (4 ULONG = 16 bytes).
+ * The ECG copy uses ECG_ProcessingSample.
+ */
+typedef struct
+{
+    uint32_t sample_counter;
+    uint32_t timestamp_low;
+    int16_t accel_x_raw;
+    int16_t accel_y_raw;
+    int16_t accel_z_raw;
+    int16_t reserved;
+} BLE_SCGSample;
+
 /* USB record type "R".  RR is microseconds and confidence is Q15. */
 typedef struct
 {
@@ -164,6 +178,22 @@ typedef struct
 #define BLE_PROCESSING_THREAD_STACK_SIZE   2048U
 #define BLE_PROCESSING_THREAD_PRIORITY     10U
 #define BLE_PROCESSING_THREAD_SLEEP_TICKS  1U
+
+/*
+ * Copies of the R-peak events for the BLE thread.
+ * 32 events cover more than 10 s of beats.
+ */
+#define BLE_RPEAK_QUEUE_CAPACITY           32U
+
+/*
+ * Copies of the raw ECG (CH2) and SCG samples for the BLE thread.
+ * 1024 samples hold about 2 s of ECG (500 Hz) and 1.8 s of SCG (562.5 Hz),
+ * above the 1 s latency budget of the BLE stream.
+ */
+#define BLE_ECG_QUEUE_CAPACITY             1024U
+#define BLE_ECG_QUEUE_MESSAGE_SIZE         4U
+#define BLE_SCG_QUEUE_CAPACITY             1024U
+#define BLE_SCG_QUEUE_MESSAGE_SIZE         4U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -197,6 +227,9 @@ extern TX_QUEUE ecg_sample_queue;
 extern TX_QUEUE scg_sample_queue;
 extern TX_QUEUE ecg_processing_queue;
 extern TX_QUEUE ecg_rpeak_queue;
+extern TX_QUEUE ble_rpeak_queue;
+extern TX_QUEUE ble_ecg_queue;
+extern TX_QUEUE ble_scg_queue;
 
 void scg_acquisition_thread_entry(ULONG thread_input);
 void ecg_processing_thread_entry(ULONG thread_input);

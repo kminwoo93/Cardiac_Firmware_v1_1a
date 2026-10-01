@@ -27,6 +27,7 @@
 #include "ads1292r.h"
 #include "icm20948.h"
 #include "cardiac_ble.h"
+#include "cardiac_gatt.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,6 +54,17 @@ TX_QUEUE scg_sample_queue;
 TX_QUEUE ecg_processing_queue;
 TX_QUEUE ecg_rpeak_queue;
 /*
+ * Copy of the R-peak events read by the BLE thread.
+ * ecg_rpeak_queue is consumed by the USB CDC thread.
+ */
+TX_QUEUE ble_rpeak_queue;
+/*
+ * Copies of the raw ECG (CH2) and SCG samples read by the BLE thread.
+ * Filled only while the BLE client subscribed to the stream.
+ */
+TX_QUEUE ble_ecg_queue;
+TX_QUEUE ble_scg_queue;
+/*
  * Timestamp event queues written by the EXTI callbacks
  * and read by the acquisition threads.
  */
@@ -69,6 +81,12 @@ static ULONG ecg_processing_queue_storage[
     ECG_PROCESSING_QUEUE_CAPACITY * ECG_PROCESSING_QUEUE_MESSAGE_SIZE];
 static ULONG ecg_rpeak_queue_storage[
     ECG_RPEAK_QUEUE_CAPACITY * ECG_RPEAK_QUEUE_MESSAGE_SIZE];
+static ULONG ble_rpeak_queue_storage[
+    BLE_RPEAK_QUEUE_CAPACITY * ECG_RPEAK_QUEUE_MESSAGE_SIZE];
+static ULONG ble_ecg_queue_storage[
+    BLE_ECG_QUEUE_CAPACITY * BLE_ECG_QUEUE_MESSAGE_SIZE];
+static ULONG ble_scg_queue_storage[
+    BLE_SCG_QUEUE_CAPACITY * BLE_SCG_QUEUE_MESSAGE_SIZE];
 /*
  * Static storage for timestamp queues.
  *
@@ -119,6 +137,9 @@ volatile uint32_t ecg_rejected_peak_count = 0U;
 volatile uint32_t ecg_searchback_detection_count = 0U;
 volatile uint32_t ecg_processing_max_execution_us = 0U;
 volatile uint32_t ecg_rpeak_queue_overflow_count = 0U;
+volatile uint32_t ble_rpeak_queue_overflow_count = 0U;
+volatile uint32_t ble_ecg_queue_overflow_count = 0U;
+volatile uint32_t ble_scg_queue_overflow_count = 0U;
 
 /*
  * Prevent EXTI callbacks from accessing timestamp queues
@@ -268,6 +289,38 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                       ECG_RPEAK_QUEUE_MESSAGE_SIZE,
                       ecg_rpeak_queue_storage,
                       sizeof(ecg_rpeak_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  if (tx_queue_create(&ble_rpeak_queue, "ble_rpeak_queue",
+                      ECG_RPEAK_QUEUE_MESSAGE_SIZE,
+                      ble_rpeak_queue_storage,
+                      sizeof(ble_rpeak_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  if ((sizeof(ECG_ProcessingSample) !=
+       (BLE_ECG_QUEUE_MESSAGE_SIZE * sizeof(ULONG))) ||
+      (sizeof(BLE_SCGSample) !=
+       (BLE_SCG_QUEUE_MESSAGE_SIZE * sizeof(ULONG))))
+  {
+      return TX_SIZE_ERROR;
+  }
+
+  if (tx_queue_create(&ble_ecg_queue, "ble_ecg_queue",
+                      BLE_ECG_QUEUE_MESSAGE_SIZE,
+                      ble_ecg_queue_storage,
+                      sizeof(ble_ecg_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  if (tx_queue_create(&ble_scg_queue, "ble_scg_queue",
+                      BLE_SCG_QUEUE_MESSAGE_SIZE,
+                      ble_scg_queue_storage,
+                      sizeof(ble_scg_queue_storage)) != TX_SUCCESS)
   {
       return TX_QUEUE_ERROR;
   }
@@ -598,6 +651,17 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
                             ecg_processing_queue_overflow_count++;
                         }
 
+                        /* Raw CH2 copy for BLE, only while subscribed */
+                        if ((cardiac_gatt_cccd_mask & CARDIAC_GATT_CCCD_ECG) != 0U)
+                        {
+                            if (tx_queue_send(&ble_ecg_queue,
+                                              &processing_sample,
+                                              TX_NO_WAIT) != TX_SUCCESS)
+                            {
+                                ble_ecg_queue_overflow_count++;
+                            }
+                        }
+
 		    	        /*
 		    	         * Do not block ECG acquisition when queue is full.
 		    	         */
@@ -726,6 +790,10 @@ static void PT_EmitPeak(uint32_t detection_counter,
     if (tx_queue_send(&ecg_rpeak_queue, &event, TX_NO_WAIT) != TX_SUCCESS)
     {
         ecg_rpeak_queue_overflow_count++;
+    }
+    if (tx_queue_send(&ble_rpeak_queue, &event, TX_NO_WAIT) != TX_SUCCESS)
+    {
+        ble_rpeak_queue_overflow_count++;
     }
     ecg_rpeak_detected_count++;
     if (searchback != 0U)
@@ -955,6 +1023,26 @@ void scg_acquisition_thread_entry(ULONG thread_input)
                 else
                 {
                     scg_queue_drop_count++;
+                }
+
+                /* Copy for BLE, only while subscribed */
+                if ((cardiac_gatt_cccd_mask & CARDIAC_GATT_CCCD_SCG) != 0U)
+                {
+                    BLE_SCGSample ble_sample;
+
+                    ble_sample.sample_counter = sample_counter;
+                    ble_sample.timestamp_low = irq_timestamp.timestamp_low;
+                    ble_sample.accel_x_raw = accel_sample.x;
+                    ble_sample.accel_y_raw = accel_sample.y;
+                    ble_sample.accel_z_raw = accel_sample.z;
+                    ble_sample.reserved = 0;
+
+                    if (tx_queue_send(&ble_scg_queue,
+                                      &ble_sample,
+                                      TX_NO_WAIT) != TX_SUCCESS)
+                    {
+                        ble_scg_queue_overflow_count++;
+                    }
                 }
             }
             else
