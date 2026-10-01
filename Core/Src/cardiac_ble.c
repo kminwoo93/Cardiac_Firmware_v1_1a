@@ -1,4 +1,5 @@
 #include "cardiac_ble.h"
+#include "cardiac_gatt.h"
 
 #include "hci.h"
 #include "hci_tl.h"
@@ -70,7 +71,8 @@ volatile uint8_t  cardiac_ble_version_status = 0xFF;
  * 4  = GATT initialized
  * 5  = GAP initialized
  * 6  = GAP Peripheral profile initialized
- * 7  = Device name written
+ * 7  = Device name written (Cardiac GATT service registered next,
+ *      see cardiac_gatt_init_status)
  * 8  = Advertising configured
  * 9  = Advertising data configured
  * 10 = Advertising enabled
@@ -218,6 +220,8 @@ void Cardiac_BLE_Process(void)
      * Called continuously from the BLE thread.
      */
     hci_user_evt_proc();
+
+    Cardiac_GATT_Process();
 
     if ((cardiac_ble_restart_adv != 0U) &&
         (cardiac_ble_init_status == BLE_STATUS_SUCCESS))
@@ -413,6 +417,17 @@ static tBleStatus Cardiac_BLE_StackInit(void)
 
     cardiac_ble_stage = 7;
 
+
+    /* ---------------------------------------------------------------------- */
+    /* Cardiac GATT service                                                   */
+    /* ---------------------------------------------------------------------- */
+
+    ret = Cardiac_GATT_Init();
+
+    if (ret != BLE_STATUS_SUCCESS)
+    {
+        return ret;
+    }
 
     return BLE_STATUS_SUCCESS;
 }
@@ -653,6 +668,8 @@ static void Cardiac_BLE_OnConnected(uint8_t Status, uint16_t Connection_Handle)
         cardiac_ble_conn_handle = Connection_Handle;
         cardiac_ble_connected = 1U;
         cardiac_ble_connection_count++;
+
+        Cardiac_GATT_OnConnected(Connection_Handle);
     }
 }
 
@@ -713,6 +730,8 @@ void hci_disconnection_complete_event(uint8_t Status,
     {
         cardiac_ble_connected = 0U;
         cardiac_ble_disconnect_reason = Reason;
+
+        Cardiac_GATT_OnDisconnected();
 
         /* Advertising stopped when the connection was created */
         cardiac_ble_restart_adv = 1U;
