@@ -164,6 +164,12 @@ typedef struct
 #define BLE_PROCESSING_THREAD_STACK_SIZE   2048U
 #define BLE_PROCESSING_THREAD_PRIORITY     10U
 #define BLE_PROCESSING_THREAD_SLEEP_TICKS  1U
+
+/*
+ * Copies of the R-peak events for the BLE thread.
+ * 32 events cover more than 10 s of beats.
+ */
+#define BLE_RPEAK_QUEUE_CAPACITY           32U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -197,6 +203,7 @@ extern TX_QUEUE ecg_sample_queue;
 extern TX_QUEUE scg_sample_queue;
 extern TX_QUEUE ecg_processing_queue;
 extern TX_QUEUE ecg_rpeak_queue;
+extern TX_QUEUE ble_rpeak_queue;
 
 void scg_acquisition_thread_entry(ULONG thread_input);
 void ecg_processing_thread_entry(ULONG thread_input);

@@ -53,6 +53,11 @@ TX_QUEUE scg_sample_queue;
 TX_QUEUE ecg_processing_queue;
 TX_QUEUE ecg_rpeak_queue;
 /*
+ * Copy of the R-peak events read by the BLE thread.
+ * ecg_rpeak_queue is consumed by the USB CDC thread.
+ */
+TX_QUEUE ble_rpeak_queue;
+/*
  * Timestamp event queues written by the EXTI callbacks
  * and read by the acquisition threads.
  */
@@ -69,6 +74,8 @@ static ULONG ecg_processing_queue_storage[
     ECG_PROCESSING_QUEUE_CAPACITY * ECG_PROCESSING_QUEUE_MESSAGE_SIZE];
 static ULONG ecg_rpeak_queue_storage[
     ECG_RPEAK_QUEUE_CAPACITY * ECG_RPEAK_QUEUE_MESSAGE_SIZE];
+static ULONG ble_rpeak_queue_storage[
+    BLE_RPEAK_QUEUE_CAPACITY * ECG_RPEAK_QUEUE_MESSAGE_SIZE];
 /*
  * Static storage for timestamp queues.
  *
@@ -119,6 +126,7 @@ volatile uint32_t ecg_rejected_peak_count = 0U;
 volatile uint32_t ecg_searchback_detection_count = 0U;
 volatile uint32_t ecg_processing_max_execution_us = 0U;
 volatile uint32_t ecg_rpeak_queue_overflow_count = 0U;
+volatile uint32_t ble_rpeak_queue_overflow_count = 0U;
 
 /*
  * Prevent EXTI callbacks from accessing timestamp queues
@@ -268,6 +276,14 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                       ECG_RPEAK_QUEUE_MESSAGE_SIZE,
                       ecg_rpeak_queue_storage,
                       sizeof(ecg_rpeak_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  if (tx_queue_create(&ble_rpeak_queue, "ble_rpeak_queue",
+                      ECG_RPEAK_QUEUE_MESSAGE_SIZE,
+                      ble_rpeak_queue_storage,
+                      sizeof(ble_rpeak_queue_storage)) != TX_SUCCESS)
   {
       return TX_QUEUE_ERROR;
   }
@@ -726,6 +742,10 @@ static void PT_EmitPeak(uint32_t detection_counter,
     if (tx_queue_send(&ecg_rpeak_queue, &event, TX_NO_WAIT) != TX_SUCCESS)
     {
         ecg_rpeak_queue_overflow_count++;
+    }
+    if (tx_queue_send(&ble_rpeak_queue, &event, TX_NO_WAIT) != TX_SUCCESS)
+    {
+        ble_rpeak_queue_overflow_count++;
     }
     ecg_rpeak_detected_count++;
     if (searchback != 0U)

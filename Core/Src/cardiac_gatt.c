@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "main.h"
+#include "app_threadx.h"
 
 #include "ble_status.h"
 #include "hci_parser.h"
@@ -51,6 +52,12 @@
 
 #define CARDIAC_STATUS_PERIOD_MS           1000U
 
+/* R-peak notification payload (fits the default 23-byte ATT MTU) */
+#define CARDIAC_RPEAK_PAYLOAD_SIZE         20U
+
+/* Maximum R-peak events taken from the queue per Cardiac_GATT_Process() */
+#define CARDIAC_RPEAK_MAX_PER_PROCESS      8U
+
 
 /* -------------------------------------------------------------------------- */
 /* Debug variables                                                            */
@@ -69,6 +76,13 @@ volatile uint16_t cardiac_gatt_att_mtu = CARDIAC_ATT_MTU_DEFAULT;
 volatile uint32_t cardiac_gatt_notify_ok_count = 0;
 volatile uint32_t cardiac_gatt_notify_fail_count = 0;
 volatile uint8_t  cardiac_gatt_last_notify_status = BLE_STATUS_SUCCESS;
+
+/* R-peak notifications */
+volatile uint32_t cardiac_gatt_rpeak_sent_count = 0;
+/* Events discarded because no client subscribed to R-peak */
+volatile uint32_t cardiac_gatt_rpeak_skipped_count = 0;
+/* Events discarded after a notification error other than "buffers full" */
+volatile uint32_t cardiac_gatt_rpeak_error_count = 0;
 
 /* Attribute handles (characteristic declaration handles) */
 volatile uint16_t cardiac_gatt_service_handle = 0;
@@ -95,6 +109,10 @@ static volatile uint8_t  cardiac_gatt_connected = 0;
 static volatile uint16_t cardiac_gatt_conn_handle = 0;
 
 static uint32_t cardiac_gatt_last_status_tick = 0;
+
+/* R-peak waiting for free WB05N TX buffers */
+static uint8_t  cardiac_gatt_rpeak_pending[CARDIAC_RPEAK_PAYLOAD_SIZE];
+static uint8_t  cardiac_gatt_rpeak_has_pending = 0;
 
 
 /* -------------------------------------------------------------------------- */
@@ -216,6 +234,100 @@ static uint8_t Cardiac_GATT_Notify(uint16_t char_handle,
 }
 
 
+/*
+ * R-peak payload, little-endian (20 bytes):
+ *
+ *  0  u32  sample_counter of the R peak (ECG sample index)
+ *  4  u32  timestamp in us (low 32 bits of the TIM2 time base)
+ *  8  i32  ECG CH2 raw amplitude at the peak
+ * 12  u32  RR interval in us (0 for the first beat)
+ * 16  u16  heart rate in bpm (0 for the first beat)
+ * 18  u16  confidence, Q15
+ */
+static void Cardiac_GATT_BuildRPeak(const ECG_RPeakEvent *event,
+                                    uint8_t buffer[CARDIAC_RPEAK_PAYLOAD_SIZE])
+{
+    Cardiac_GATT_PutU32(&buffer[0], event->sample_counter);
+    Cardiac_GATT_PutU32(&buffer[4], event->timestamp_low);
+    Cardiac_GATT_PutU32(&buffer[8], (uint32_t)event->amplitude);
+    Cardiac_GATT_PutU32(&buffer[12], event->rr_interval_us);
+    Cardiac_GATT_PutU16(&buffer[16],
+                        Cardiac_GATT_Saturate16(event->heart_rate_bpm));
+    Cardiac_GATT_PutU16(&buffer[18],
+                        Cardiac_GATT_Saturate16(event->confidence_q15));
+}
+
+
+/*
+ * Returns 1 when the payload was consumed (sent or discarded),
+ * 0 when the WB05N TX buffers are full and it must be retried later.
+ */
+static uint8_t Cardiac_GATT_SendRPeak(uint8_t payload[CARDIAC_RPEAK_PAYLOAD_SIZE])
+{
+    uint8_t ret;
+
+    if ((cardiac_gatt_connected == 0U) ||
+        ((cardiac_gatt_cccd_mask & CARDIAC_GATT_CCCD_RPEAK) == 0U))
+    {
+        cardiac_gatt_rpeak_skipped_count++;
+        return 1U;
+    }
+
+    ret = Cardiac_GATT_Notify(cardiac_gatt_rpeak_char_handle,
+                              CARDIAC_GATT_CCCD_RPEAK,
+                              payload,
+                              CARDIAC_RPEAK_PAYLOAD_SIZE);
+
+    if (ret == BLE_STATUS_SUCCESS)
+    {
+        cardiac_gatt_rpeak_sent_count++;
+        return 1U;
+    }
+
+    if ((ret == BLE_STATUS_INSUFFICIENT_RESOURCES) ||
+        (ret == BLE_STATUS_BUSY))
+    {
+        return 0U;
+    }
+
+    cardiac_gatt_rpeak_error_count++;
+    return 1U;
+}
+
+
+static void Cardiac_GATT_ProcessRPeaks(void)
+{
+    ECG_RPeakEvent event;
+    uint32_t count;
+
+    if (cardiac_gatt_rpeak_has_pending != 0U)
+    {
+        if (Cardiac_GATT_SendRPeak(cardiac_gatt_rpeak_pending) == 0U)
+        {
+            return;
+        }
+        cardiac_gatt_rpeak_has_pending = 0U;
+    }
+
+    for (count = 0U; count < CARDIAC_RPEAK_MAX_PER_PROCESS; count++)
+    {
+        if (tx_queue_receive(&ble_rpeak_queue, &event, TX_NO_WAIT) !=
+            TX_SUCCESS)
+        {
+            return;
+        }
+
+        Cardiac_GATT_BuildRPeak(&event, cardiac_gatt_rpeak_pending);
+
+        if (Cardiac_GATT_SendRPeak(cardiac_gatt_rpeak_pending) == 0U)
+        {
+            cardiac_gatt_rpeak_has_pending = 1U;
+            return;
+        }
+    }
+}
+
+
 static void Cardiac_GATT_UpdateStatus(void)
 {
     uint8_t status[CARDIAC_GATT_STATUS_SIZE];
@@ -329,6 +441,7 @@ void Cardiac_GATT_OnConnected(uint16_t connection_handle)
 void Cardiac_GATT_OnDisconnected(void)
 {
     cardiac_gatt_connected = 0U;
+    cardiac_gatt_rpeak_has_pending = 0U;
     cardiac_gatt_cccd_mask = 0U;
     cardiac_gatt_att_mtu = CARDIAC_ATT_MTU_DEFAULT;
 }
@@ -347,6 +460,8 @@ void Cardiac_GATT_Process(void)
         cardiac_gatt_last_status_tick = HAL_GetTick();
         Cardiac_GATT_UpdateStatus();
     }
+
+    Cardiac_GATT_ProcessRPeaks();
 }
 
 
