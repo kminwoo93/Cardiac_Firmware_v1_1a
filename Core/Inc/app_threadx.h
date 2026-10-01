@@ -155,6 +155,15 @@ typedef struct
  * ECG in this causal look-back interval instead.
  */
 #define ECG_PT_RPEAK_LOOKBACK_SAMPLES  ((ECG_SAMPLE_RATE_HZ * 200U) / 1000U)
+
+/*
+ * BLE processing thread.
+ * Lower priority than the sensor and ECG processing threads,
+ * higher than the USB CDC threads.
+ */
+#define BLE_PROCESSING_THREAD_STACK_SIZE   2048U
+#define BLE_PROCESSING_THREAD_PRIORITY     10U
+#define BLE_PROCESSING_THREAD_SLEEP_TICKS  1U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -191,6 +200,7 @@ extern TX_QUEUE ecg_rpeak_queue;
 
 void scg_acquisition_thread_entry(ULONG thread_input);
 void ecg_processing_thread_entry(ULONG thread_input);
+void ble_processing_thread_entry(ULONG thread_input);
 /* USER CODE END EFP */
 
 /* USER CODE BEGIN 1 */

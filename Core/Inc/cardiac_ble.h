@@ -20,11 +20,17 @@ extern "C" {
 extern volatile uint8_t cardiac_ble_init_status;
 extern volatile uint8_t cardiac_ble_stage;
 
-/* Initialize STM32WB05N HCI transport and test communication with HCI Reset. */
+/* 1 while a central is connected */
+extern volatile uint8_t  cardiac_ble_connected;
+extern volatile uint16_t cardiac_ble_conn_handle;
+
+/* Initialize the STM32WB05N, the BLE stack and start advertising.
+ * Must be called from the BLE thread (uses tx_thread_sleep()).
+ */
 void Cardiac_BLE_Init(void);
 
 /* Process pending HCI events.
- * Call this periodically later from the BLE thread.
+ * Must be called continuously from the BLE thread.
  */
 void Cardiac_BLE_Process(void);
 

@@ -45,7 +45,12 @@ uint8_t *pBufferReadyForReception;
 /* brief Data buffers used to manage received data in interrupt routine */
 uint8_t aRXBufferA[UART_ARRAY_SIZE];
 uint8_t aRXBufferB[UART_ARRAY_SIZE];
+/* Position in RxBuffer up to which received data have been processed */
+static uint16_t old_pos = 0;
+/* Number of times reception was restarted after a UART error */
+volatile uint32_t hci_tl_uart_rx_restart_count = 0;
 /* Private function prototypes -----------------------------------------------*/
+static void HCI_TL_UART_RestartRx(void);
 /******************** IO Operation and BUS services ***************************/
 
 /**
@@ -61,9 +66,13 @@ int32_t HCI_TL_UART_Init(void *pConf)
 
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
-  /* Configure RESET Line */
+  /* Configure RESET Line.
+     Open-drain: the STM32WB05N drives NRST low itself on internal resets
+     (HCI_Reset triggers NVIC_SystemReset), so the line must not be driven
+     high. The WB05N internal pull-up provides the high level. */
+  HAL_GPIO_WritePin(HCI_TL_RST_PORT, HCI_TL_RST_PIN, GPIO_PIN_SET);
   GPIO_InitStruct.Pin =  HCI_TL_RST_PIN ;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(HCI_TL_RST_PORT, &GPIO_InitStruct);
@@ -76,8 +85,26 @@ int32_t HCI_TL_UART_Init(void *pConf)
   pBufferReadyForUser      = aRXBufferB;
 
   uwNbReceivedChars        = 0;
+  old_pos                  = 0;
 
   return HAL_UARTEx_ReceiveToIdle_DMA(&UART_INSTANCE, RxBuffer, UART_ARRAY_SIZE);
+}
+
+/**
+  * @brief  Restart reception after it was aborted.
+  *         Any UART error (FE/NE/ORE) during DMA reception makes the HAL abort
+  *         the reception, and nothing would restart it otherwise.
+  * @param  None
+  * @retval None
+  */
+static void HCI_TL_UART_RestartRx(void)
+{
+  (void)HAL_UART_AbortReceive(&UART_INSTANCE);
+  __HAL_UART_CLEAR_FLAG(&UART_INSTANCE,
+                        UART_CLEAR_PEF | UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_OREF);
+  old_pos = 0;
+  hci_tl_uart_rx_restart_count++;
+  (void)HAL_UARTEx_ReceiveToIdle_DMA(&UART_INSTANCE, RxBuffer, UART_ARRAY_SIZE);
 }
 
 /**
@@ -172,11 +199,16 @@ void hci_tl_lowlevel_init(void)
   */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-  static uint16_t old_pos = 0;
   uint8_t *ptemp;
   uint16_t i;
   if (huart == &UART_INSTANCE)
   {
+  /* In circular mode Size == buffer size means "position wrapped to 0".
+     An IDLE event with no new data also reports the full buffer size. */
+  if (Size == UART_ARRAY_SIZE)
+  {
+    Size = 0;
+  }
   /* Check if number of received data in recpetion buffer has changed */
   if (Size != old_pos)
   {
@@ -224,5 +256,18 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
      indicates position to which data have been processed */
   old_pos = Size;
 
+  }
+}
+
+/**
+  * @brief  UART error callback.
+  * @param  huart handle
+  * @retval None
+  */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart == &UART_INSTANCE)
+  {
+    HCI_TL_UART_RestartRx();
   }
 }

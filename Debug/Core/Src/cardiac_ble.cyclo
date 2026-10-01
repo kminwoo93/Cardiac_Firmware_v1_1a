@@ -1,5 +1,0 @@
-../Core/Src/cardiac_ble.c:92:6:Cardiac_BLE_Init	4
-../Core/Src/cardiac_ble.c:176:6:Cardiac_BLE_Process	1
-../Core/Src/cardiac_ble.c:192:19:Cardiac_BLE_StackInit	9
-../Core/Src/cardiac_ble.c:351:19:Cardiac_BLE_StartAdvertising	4
-../Core/Src/cardiac_ble.c:458:13:Cardiac_BLE_UserEvtRx	12

@@ -1,3 +1,0 @@
-../Core/Src/usb_otg.c:31:6:MX_USB_OTG_HS_PCD_Init	16	static
-../Core/Src/usb_otg.c:62:6:HAL_PCD_MspInit	248	static
-../Core/Src/usb_otg.c:120:6:HAL_PCD_MspDeInit	16	static

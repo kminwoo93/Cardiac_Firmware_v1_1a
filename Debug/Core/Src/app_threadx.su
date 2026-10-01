@@ -1,9 +1,0 @@
-../Drivers/CMSIS/Include/core_cm33.h:2481:22:__NVIC_ClearPendingIRQ	16	static
-../Core/Src/app_threadx.c:193:6:App_ThreadX_Init	72	static
-../Core/Src/app_threadx.c:428:6:ecg_acquisition_thread_entry	360	static
-../Core/Src/app_threadx.c:597:6:MX_ThreadX_Init	8	static
-../Core/Src/app_threadx.c:626:13:PT_EmitPeak	216	static
-../Core/Src/app_threadx.c:700:6:ecg_processing_thread_entry	448	static
-../Core/Src/app_threadx.c:825:6:scg_acquisition_thread_entry	88	static
-../Core/Src/app_threadx.c:928:6:HAL_GPIO_EXTI_Falling_Callback	24	static
-../Core/Src/app_threadx.c:963:6:HAL_GPIO_EXTI_Rising_Callback	24	static
