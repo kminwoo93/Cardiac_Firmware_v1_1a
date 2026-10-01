@@ -26,6 +26,7 @@
 #include "main.h"
 #include "ads1292r.h"
 #include "icm20948.h"
+#include "cardiac_ble.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -414,6 +415,17 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
           sizeof(scg_queue_storage)) != TX_SUCCESS)
   {
       return TX_QUEUE_ERROR;
+  }
+
+  /*
+   * Create the BLE thread that processes HCI events
+   * received from the STM32WB05N.
+   */
+  ret = Cardiac_BLE_ThreadCreate(byte_pool);
+
+  if (ret != TX_SUCCESS)
+  {
+      return ret;
   }
 
   /* USER CODE END App_ThreadX_Init */

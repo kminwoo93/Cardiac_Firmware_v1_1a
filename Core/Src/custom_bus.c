@@ -333,7 +333,8 @@ static void USART2_MspInit(UART_HandleTypeDef* uartHandle)
 
     GPIO_InitStruct.Pin = BUS_USART2_RX_GPIO_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    /* Keep RX idle-high while the STM32WB05N TX is not driven (reset/boot) */
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = BUS_USART2_RX_GPIO_AF;
     HAL_GPIO_Init(BUS_USART2_RX_GPIO_PORT, &GPIO_InitStruct);

@@ -61,6 +61,9 @@ void hci_input_cmd(uint8_t *buff, uint16_t len);
 void packet_received(uint8_t *packet, uint16_t pckt_len);
 int HCI_verify(const tHciDataPacket * hciReadPacket);
 
+/* Events dropped because no free HCI packet was available. */
+extern volatile uint32_t hci_dropped_packet_count;
+
 extern uint8_t buffer_out[];
 extern uint16_t buffer_out_len;
 

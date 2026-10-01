@@ -35,6 +35,8 @@ extern "C" {
 #define STM32WB05N_DEBUG      0
 /*---------- Number of Bytes reserved for HCI Read Packet -----------*/
 #define HCI_READ_PACKET_SIZE      200
+/*---------- Number of HCI Read Packets (events buffered until processed) -----------*/
+#define HCI_READ_PACKET_NUM_MAX   16
 /*---------- Number of Bytes reserved for HCI Max Payload -----------*/
 #define HCI_MAX_PAYLOAD_SIZE      200
 /*---------- Scan Interval: time interval from when the Controller started its last scan until it begins the subsequent scan (for a number N, Time = N x 0.625 msec) -----------*/

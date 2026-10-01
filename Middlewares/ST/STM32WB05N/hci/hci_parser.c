@@ -28,6 +28,7 @@
 #define HCI_PACKET_SIZE         532 /* Because of extended ACI commands, size can be bigger than standard HCI commands */
 static uint8_t hci_buffer[HCI_PACKET_SIZE];
 static uint16_t hci_pckt_len = 0;
+volatile uint32_t hci_dropped_packet_count = 0;
 
 /**
 * @brief Parses ACI commands, ACL and vendor packets
@@ -134,7 +135,12 @@ void hci_input_event(uint8_t *buff, uint16_t len)
   static uint16_t header_len;
   uint8_t byte;
   uint16_t i = 0;
-        
+
+  /* A corrupted length field filled the buffer: resynchronize instead of
+     staying stuck in WAITING_PAYLOAD and ignoring every following byte. */
+  if(hci_pckt_len >= HCI_PACKET_SIZE)
+    state = WAITING_TYPE;
+
   if(state == WAITING_TYPE)
     hci_pckt_len = 0;
     
@@ -208,18 +214,31 @@ void packet_received(uint8_t *packet, uint16_t pckt_len)
 { 
   tHciDataPacket * hciReadPacketParser = NULL;
 
+  if (pckt_len == 0)
+  {
+    return;
+  }
+
+  /* No free packet, or the event does not fit in dataBuff: drop it.
+     Taking a packet from an empty pool returns the list head itself and
+     corrupts both packet lists; copying more than HCI_READ_PACKET_SIZE
+     bytes overruns the packet buffer. */
+  if (list_is_empty(&hciReadPktPool) || (pckt_len > HCI_READ_PACKET_SIZE))
+  {
+    hci_dropped_packet_count++;
+    return;
+  }
+
   /* enqueueing a packet for read */
   list_remove_head (&hciReadPktPool, (tListNode **)&hciReadPacketParser);
-  
-  if(pckt_len > 0){
-    hciReadPacketParser->data_len = pckt_len;
-    STM32WB_memcpy(hciReadPacketParser->dataBuff, packet, pckt_len);
-      
-    if(HCI_verify(hciReadPacketParser) == 0)
-      list_insert_tail(&hciReadPktRxQueue, (tListNode *)hciReadPacketParser);
-    else
-      list_insert_head(&hciReadPktPool, (tListNode *)hciReadPacketParser);          
-  }  
+
+  hciReadPacketParser->data_len = pckt_len;
+  STM32WB_memcpy(hciReadPacketParser->dataBuff, packet, pckt_len);
+
+  if(HCI_verify(hciReadPacketParser) == 0)
+    list_insert_tail(&hciReadPktRxQueue, (tListNode *)hciReadPacketParser);
+  else
+    list_insert_head(&hciReadPktPool, (tListNode *)hciReadPacketParser);
 }
 
 /**

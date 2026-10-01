@@ -31,6 +31,15 @@
 #define CARDIAC_ADV_INTERVAL_MIN             0x00A0U
 #define CARDIAC_ADV_INTERVAL_MAX             0x00A0U
 
+/* Maximum time to wait for ACI_BLUE_INITIALIZED after the hardware reset */
+#define CARDIAC_BLE_BOOT_TIMEOUT_MS          2000U
+
+/* BLE thread */
+#define CARDIAC_BLE_THREAD_STACK_SIZE        2048U
+#define CARDIAC_BLE_THREAD_PRIORITY          10U
+/* Fallback wake-up period in ticks, in case a notification is missed */
+#define CARDIAC_BLE_THREAD_POLL_TICKS        10U
+
 
 /* -------------------------------------------------------------------------- */
 /* Debug variables                                                            */
@@ -68,12 +77,36 @@ volatile uint8_t  cardiac_ble_version_status = 0xFF;
  */
 volatile uint8_t cardiac_ble_stage = 0;
 
+/* Set by ACI_BLUE_INITIALIZED: STM32WB05N finished booting */
+volatile uint8_t  cardiac_ble_boot_done = 0;
+volatile uint8_t  cardiac_ble_boot_reason = 0;
+
+/* Connection state */
+volatile uint8_t  cardiac_ble_connected = 0;
+volatile uint16_t cardiac_ble_conn_handle = 0;
+volatile uint8_t  cardiac_ble_disconnect_reason = 0;
+volatile uint32_t cardiac_ble_connection_count = 0;
+
+/* Last aci_gap_set_advertising_enable() status after a disconnection */
+volatile uint8_t  cardiac_ble_adv_restart_status = 0;
+
 
 /* -------------------------------------------------------------------------- */
 /* Private variables                                                          */
 /* -------------------------------------------------------------------------- */
 
 static uint8_t cardiac_bdaddr[CARDIAC_BDADDR_SIZE];
+
+static Advertising_Set_Parameters_t cardiac_adv_set_params[1];
+
+/* Advertising stops on connection and must be re-enabled from thread
+   context after a disconnection (not from the event callback, which runs
+   inside hci_user_evt_proc()). */
+static volatile uint8_t cardiac_ble_restart_adv = 0;
+
+static TX_THREAD    cardiac_ble_thread;
+static TX_SEMAPHORE cardiac_ble_evt_sem;
+static volatile uint8_t cardiac_ble_evt_sem_ready = 0;
 
 
 /* -------------------------------------------------------------------------- */
@@ -83,6 +116,8 @@ static uint8_t cardiac_bdaddr[CARDIAC_BDADDR_SIZE];
 static void Cardiac_BLE_UserEvtRx(void *pData);
 static tBleStatus Cardiac_BLE_StackInit(void);
 static tBleStatus Cardiac_BLE_StartAdvertising(void);
+static void Cardiac_BLE_WaitBoot(void);
+static VOID Cardiac_BLE_ThreadEntry(ULONG thread_input);
 
 
 /* -------------------------------------------------------------------------- */
@@ -108,7 +143,12 @@ void Cardiac_BLE_Init(void)
      *   -> STM32WB05N
      */
     hci_init(Cardiac_BLE_UserEvtRx, NULL);
-    HAL_Delay(500);   // test delay
+
+    /*
+     * hci_init() pulses NRST. Wait until the STM32WB05N reports
+     * ACI_BLUE_INITIALIZED, i.e. its UART is ready for commands.
+     */
+    Cardiac_BLE_WaitBoot();
     cardiac_ble_stage = 1;
 
 
@@ -177,11 +217,112 @@ void Cardiac_BLE_Process(void)
 {
     /*
      * Process asynchronous HCI/BLE events.
-     *
-     * Later this function will be called continuously
-     * from a dedicated BLE ThreadX thread.
+     * Called from the BLE thread.
      */
     hci_user_evt_proc();
+}
+
+
+UINT Cardiac_BLE_ThreadCreate(TX_BYTE_POOL *byte_pool)
+{
+    CHAR *stack_pointer;
+
+    if (tx_semaphore_create(&cardiac_ble_evt_sem,
+                            "ble_evt_semaphore",
+                            0U) != TX_SUCCESS)
+    {
+        return TX_SEMAPHORE_ERROR;
+    }
+
+    cardiac_ble_evt_sem_ready = 1U;
+
+    if (tx_byte_allocate(byte_pool,
+                         (VOID **)&stack_pointer,
+                         CARDIAC_BLE_THREAD_STACK_SIZE,
+                         TX_NO_WAIT) != TX_SUCCESS)
+    {
+        return TX_POOL_ERROR;
+    }
+
+    if (tx_thread_create(&cardiac_ble_thread,
+                         "ble_thread",
+                         Cardiac_BLE_ThreadEntry,
+                         0U,
+                         stack_pointer,
+                         CARDIAC_BLE_THREAD_STACK_SIZE,
+                         CARDIAC_BLE_THREAD_PRIORITY,
+                         CARDIAC_BLE_THREAD_PRIORITY,
+                         TX_NO_TIME_SLICE,
+                         TX_AUTO_START) != TX_SUCCESS)
+    {
+        return TX_THREAD_ERROR;
+    }
+
+    return TX_SUCCESS;
+}
+
+
+void Cardiac_BLE_RxNotify(void)
+{
+    /*
+     * Also called while Cardiac_BLE_Init() runs before the kernel starts,
+     * when the semaphore does not exist yet.
+     */
+    if (cardiac_ble_evt_sem_ready != 0U)
+    {
+        (void)tx_semaphore_put(&cardiac_ble_evt_sem);
+    }
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* BLE thread                                                                 */
+/* -------------------------------------------------------------------------- */
+
+static VOID Cardiac_BLE_ThreadEntry(ULONG thread_input)
+{
+    tBleStatus ret;
+
+    (void)thread_input;
+
+    for (;;)
+    {
+        (void)tx_semaphore_get(&cardiac_ble_evt_sem,
+                               CARDIAC_BLE_THREAD_POLL_TICKS);
+
+        Cardiac_BLE_Process();
+
+        if ((cardiac_ble_restart_adv != 0U) &&
+            (cardiac_ble_init_status == BLE_STATUS_SUCCESS))
+        {
+            ret = aci_gap_set_advertising_enable(
+                    ENABLE,
+                    1,
+                    cardiac_adv_set_params);
+
+            cardiac_ble_adv_restart_status = ret;
+
+            /* On failure, retry on the next wake-up */
+            if (ret == BLE_STATUS_SUCCESS)
+            {
+                cardiac_ble_restart_adv = 0U;
+            }
+        }
+    }
+}
+
+
+static void Cardiac_BLE_WaitBoot(void)
+{
+    uint32_t tickstart = HAL_GetTick();
+
+    cardiac_ble_boot_done = 0U;
+
+    while ((cardiac_ble_boot_done == 0U) &&
+           ((HAL_GetTick() - tickstart) < CARDIAC_BLE_BOOT_TIMEOUT_MS))
+    {
+        hci_user_evt_proc();
+    }
 }
 
 
@@ -352,8 +493,6 @@ static tBleStatus Cardiac_BLE_StartAdvertising(void)
 {
     tBleStatus ret;
 
-    Advertising_Set_Parameters_t Advertising_Set_Parameters[1];
-
 
     /*
      * Legacy advertising packet
@@ -430,14 +569,14 @@ static tBleStatus Cardiac_BLE_StartAdvertising(void)
     /* Enable advertising                                                     */
     /* ---------------------------------------------------------------------- */
 
-    Advertising_Set_Parameters[0].Advertising_Handle = 0;
-    Advertising_Set_Parameters[0].Duration = 0;
-    Advertising_Set_Parameters[0].Max_Extended_Advertising_Events = 0;
+    cardiac_adv_set_params[0].Advertising_Handle = 0;
+    cardiac_adv_set_params[0].Duration = 0;
+    cardiac_adv_set_params[0].Max_Extended_Advertising_Events = 0;
 
     ret = aci_gap_set_advertising_enable(
             ENABLE,
             1,
-            Advertising_Set_Parameters);
+            cardiac_adv_set_params);
 
     if (ret != BLE_STATUS_SUCCESS)
     {
@@ -559,5 +698,90 @@ static void Cardiac_BLE_UserEvtRx(void *pData)
                 }
             }
         }
+    }
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* HCI / ACI event handlers (override the weak ones in the middleware)        */
+/* -------------------------------------------------------------------------- */
+
+void aci_blue_initialized_event(uint8_t Reason_Code)
+{
+    cardiac_ble_boot_reason = Reason_Code;
+    cardiac_ble_boot_done = 1U;
+}
+
+
+static void Cardiac_BLE_OnConnected(uint8_t Status, uint16_t Connection_Handle)
+{
+    if (Status == BLE_STATUS_SUCCESS)
+    {
+        cardiac_ble_conn_handle = Connection_Handle;
+        cardiac_ble_connected = 1U;
+        cardiac_ble_connection_count++;
+    }
+}
+
+
+void hci_le_connection_complete_event(uint8_t Status,
+                                      uint16_t Connection_Handle,
+                                      uint8_t Role,
+                                      uint8_t Peer_Address_Type,
+                                      uint8_t Peer_Address[6],
+                                      uint16_t Connection_Interval,
+                                      uint16_t Peripheral_Latency,
+                                      uint16_t Supervision_Timeout,
+                                      uint8_t Central_Clock_Accuracy)
+{
+    Cardiac_BLE_OnConnected(Status, Connection_Handle);
+}
+
+
+void hci_le_enhanced_connection_complete_event(uint8_t Status,
+                                               uint16_t Connection_Handle,
+                                               uint8_t Role,
+                                               uint8_t Peer_Address_Type,
+                                               uint8_t Peer_Address[6],
+                                               uint8_t Local_Resolvable_Private_Address[6],
+                                               uint8_t Peer_Resolvable_Private_Address[6],
+                                               uint16_t Connection_Interval,
+                                               uint16_t Peripheral_Latency,
+                                               uint16_t Supervision_Timeout,
+                                               uint8_t Central_Clock_Accuracy)
+{
+    Cardiac_BLE_OnConnected(Status, Connection_Handle);
+}
+
+
+void hci_le_enhanced_connection_complete_v2_event(uint8_t Status,
+                                                  uint16_t Connection_Handle,
+                                                  uint8_t Role,
+                                                  uint8_t Peer_Address_Type,
+                                                  uint8_t Peer_Address[6],
+                                                  uint8_t Local_Resolvable_Private_Address[6],
+                                                  uint8_t Peer_Resolvable_Private_Address[6],
+                                                  uint16_t Connection_Interval,
+                                                  uint16_t Peripheral_Latency,
+                                                  uint16_t Supervision_Timeout,
+                                                  uint8_t Central_Clock_Accuracy,
+                                                  uint8_t Advertising_Handle,
+                                                  uint16_t Sync_Handle)
+{
+    Cardiac_BLE_OnConnected(Status, Connection_Handle);
+}
+
+
+void hci_disconnection_complete_event(uint8_t Status,
+                                      uint16_t Connection_Handle,
+                                      uint8_t Reason)
+{
+    if (Status == BLE_STATUS_SUCCESS)
+    {
+        cardiac_ble_connected = 0U;
+        cardiac_ble_disconnect_reason = Reason;
+
+        /* Advertising stopped when the connection was created */
+        cardiac_ble_restart_adv = 1U;
     }
 }
