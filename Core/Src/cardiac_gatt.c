@@ -58,6 +58,27 @@
 /* Maximum R-peak events taken from the queue per Cardiac_GATT_Process() */
 #define CARDIAC_RPEAK_MAX_PER_PROCESS      8U
 
+/*
+ * ECG / SCG stream packets.
+ *
+ * Largest ATT payload the U5 builds. The Transparent Mode firmware limits
+ * the ATT MTU to 160 (157-byte payload); 244 matches an ATT MTU of 247.
+ */
+#define CARDIAC_STREAM_MAX_PAYLOAD         244U
+#define CARDIAC_STREAM_HEADER_SIZE         12U
+
+/* Send a partly filled packet once its first sample is this old */
+#define CARDIAC_STREAM_FLUSH_MS            200U
+
+/* Limits per Cardiac_GATT_Process() call, so HCI events keep flowing */
+#define CARDIAC_STREAM_MAX_PACKETS_PER_PROCESS   8U
+#define CARDIAC_STREAM_MAX_DISCARD_PER_PROCESS   128U
+
+/* Header format byte: high nibble = version, low nibble = channel mask */
+#define CARDIAC_STREAM_FORMAT_VERSION      1U
+#define CARDIAC_ECG_CHANNEL_MASK           0x02U   /* CH2 only */
+#define CARDIAC_SCG_AXIS_MASK              0x07U   /* X, Y, Z */
+
 
 /* -------------------------------------------------------------------------- */
 /* Debug variables                                                            */
@@ -84,6 +105,16 @@ volatile uint32_t cardiac_gatt_rpeak_skipped_count = 0;
 /* Events discarded after a notification error other than "buffers full" */
 volatile uint32_t cardiac_gatt_rpeak_error_count = 0;
 
+/* ECG / SCG stream statistics */
+volatile uint32_t cardiac_gatt_ecg_packet_count = 0;
+volatile uint32_t cardiac_gatt_ecg_sample_count = 0;
+volatile uint32_t cardiac_gatt_ecg_error_count = 0;
+volatile uint32_t cardiac_gatt_ecg_gap_count = 0;
+volatile uint32_t cardiac_gatt_scg_packet_count = 0;
+volatile uint32_t cardiac_gatt_scg_sample_count = 0;
+volatile uint32_t cardiac_gatt_scg_error_count = 0;
+volatile uint32_t cardiac_gatt_scg_gap_count = 0;
+
 /* Attribute handles (characteristic declaration handles) */
 volatile uint16_t cardiac_gatt_service_handle = 0;
 volatile uint16_t cardiac_gatt_ecg_char_handle = 0;
@@ -109,6 +140,52 @@ static volatile uint8_t  cardiac_gatt_connected = 0;
 static volatile uint16_t cardiac_gatt_conn_handle = 0;
 
 static uint32_t cardiac_gatt_last_status_tick = 0;
+
+/* One ECG or SCG sample in a common form */
+typedef struct
+{
+    uint32_t counter;
+    uint32_t timestamp;
+    int32_t  value[3];
+} Cardiac_StreamSample;
+
+/*
+ * Packet assembly state of one stream.
+ *
+ * Packet layout, little-endian:
+ *  0  u16  sequence number (per stream, wraps)
+ *  2  u32  sample_counter of the first sample
+ *  6  u32  timestamp in us of the first sample (low 32 bits of TIM2)
+ * 10  u8   number of samples
+ * 11  u8   format: version << 4 | channel mask
+ * 12  ...  samples (ECG: int24 per channel, SCG: int16 X, Y, Z)
+ *
+ * Samples in one packet are consecutive (sample_counter + 1 each).
+ */
+typedef struct
+{
+    uint8_t  (*read)(Cardiac_StreamSample *sample);
+    void     (*pack)(uint8_t *dst, const Cardiac_StreamSample *sample);
+    volatile uint16_t *char_handle;
+    volatile uint32_t *packet_count;
+    volatile uint32_t *sample_count;
+    volatile uint32_t *error_count;
+    volatile uint32_t *gap_count;
+    uint8_t  cccd_bit;
+    uint8_t  bytes_per_sample;
+    uint8_t  format;
+
+    uint16_t seq;
+    uint8_t  buffer[CARDIAC_STREAM_MAX_PAYLOAD];
+    uint8_t  n_samples;
+    uint8_t  ready;
+    uint32_t next_counter;
+    uint32_t first_tick;
+
+    /* Sample read from the queue that starts the next packet */
+    Cardiac_StreamSample carry;
+    uint8_t  has_carry;
+} Cardiac_Stream;
 
 /* R-peak waiting for free WB05N TX buffers */
 static uint8_t  cardiac_gatt_rpeak_pending[CARDIAC_RPEAK_PAYLOAD_SIZE];
@@ -328,6 +405,262 @@ static void Cardiac_GATT_ProcessRPeaks(void)
 }
 
 
+/* -------------------------------------------------------------------------- */
+/* ECG / SCG streams                                                          */
+/* -------------------------------------------------------------------------- */
+
+static uint8_t Cardiac_GATT_ReadEcg(Cardiac_StreamSample *sample)
+{
+    ECG_ProcessingSample message;
+
+    if (tx_queue_receive(&ble_ecg_queue, &message, TX_NO_WAIT) != TX_SUCCESS)
+    {
+        return 0U;
+    }
+
+    sample->counter = message.sample_counter;
+    sample->timestamp = message.timestamp_low;
+    sample->value[0] = message.ecg_raw;
+
+    return 1U;
+}
+
+
+static uint8_t Cardiac_GATT_ReadScg(Cardiac_StreamSample *sample)
+{
+    BLE_SCGSample message;
+
+    if (tx_queue_receive(&ble_scg_queue, &message, TX_NO_WAIT) != TX_SUCCESS)
+    {
+        return 0U;
+    }
+
+    sample->counter = message.sample_counter;
+    sample->timestamp = message.timestamp_low;
+    sample->value[0] = message.accel_x_raw;
+    sample->value[1] = message.accel_y_raw;
+    sample->value[2] = message.accel_z_raw;
+
+    return 1U;
+}
+
+
+/* ECG CH2: signed 24-bit (ADS1292R resolution) */
+static void Cardiac_GATT_PackEcg(uint8_t *dst, const Cardiac_StreamSample *sample)
+{
+    uint32_t v = (uint32_t)sample->value[0];
+
+    dst[0] = (uint8_t)(v & 0xFFU);
+    dst[1] = (uint8_t)((v >> 8) & 0xFFU);
+    dst[2] = (uint8_t)((v >> 16) & 0xFFU);
+}
+
+
+/* SCG: signed 16-bit X, Y, Z */
+static void Cardiac_GATT_PackScg(uint8_t *dst, const Cardiac_StreamSample *sample)
+{
+    Cardiac_GATT_PutU16(&dst[0], (uint16_t)sample->value[0]);
+    Cardiac_GATT_PutU16(&dst[2], (uint16_t)sample->value[1]);
+    Cardiac_GATT_PutU16(&dst[4], (uint16_t)sample->value[2]);
+}
+
+
+static Cardiac_Stream cardiac_ecg_stream =
+{
+    .read = Cardiac_GATT_ReadEcg,
+    .pack = Cardiac_GATT_PackEcg,
+    .char_handle = &cardiac_gatt_ecg_char_handle,
+    .packet_count = &cardiac_gatt_ecg_packet_count,
+    .sample_count = &cardiac_gatt_ecg_sample_count,
+    .error_count = &cardiac_gatt_ecg_error_count,
+    .gap_count = &cardiac_gatt_ecg_gap_count,
+    .cccd_bit = CARDIAC_GATT_CCCD_ECG,
+    .bytes_per_sample = 3U,
+    .format = (CARDIAC_STREAM_FORMAT_VERSION << 4) | CARDIAC_ECG_CHANNEL_MASK,
+};
+
+static Cardiac_Stream cardiac_scg_stream =
+{
+    .read = Cardiac_GATT_ReadScg,
+    .pack = Cardiac_GATT_PackScg,
+    .char_handle = &cardiac_gatt_scg_char_handle,
+    .packet_count = &cardiac_gatt_scg_packet_count,
+    .sample_count = &cardiac_gatt_scg_sample_count,
+    .error_count = &cardiac_gatt_scg_error_count,
+    .gap_count = &cardiac_gatt_scg_gap_count,
+    .cccd_bit = CARDIAC_GATT_CCCD_SCG,
+    .bytes_per_sample = 6U,
+    .format = (CARDIAC_STREAM_FORMAT_VERSION << 4) | CARDIAC_SCG_AXIS_MASK,
+};
+
+
+static void Cardiac_GATT_StreamReset(Cardiac_Stream *stream)
+{
+    stream->n_samples = 0U;
+    stream->ready = 0U;
+    stream->has_carry = 0U;
+}
+
+
+/* Samples that fit one notification with the current ATT MTU */
+static uint8_t Cardiac_GATT_StreamCapacity(const Cardiac_Stream *stream)
+{
+    uint16_t payload = (cardiac_gatt_att_mtu > 3U) ?
+                       (uint16_t)(cardiac_gatt_att_mtu - 3U) : 0U;
+    uint16_t samples;
+
+    if (payload > CARDIAC_STREAM_MAX_PAYLOAD)
+    {
+        payload = CARDIAC_STREAM_MAX_PAYLOAD;
+    }
+
+    if (payload <= CARDIAC_STREAM_HEADER_SIZE)
+    {
+        return 0U;
+    }
+
+    samples = (uint16_t)((payload - CARDIAC_STREAM_HEADER_SIZE) /
+                         stream->bytes_per_sample);
+
+    return (samples > 255U) ? 255U : (uint8_t)samples;
+}
+
+
+/* Fill the packet; returns 1 when it is ready to send */
+static uint8_t Cardiac_GATT_StreamFill(Cardiac_Stream *stream, uint8_t capacity)
+{
+    Cardiac_StreamSample sample;
+
+    while (stream->n_samples < capacity)
+    {
+        if (stream->has_carry != 0U)
+        {
+            sample = stream->carry;
+            stream->has_carry = 0U;
+        }
+        else if (stream->read(&sample) == 0U)
+        {
+            break;
+        }
+
+        /* A gap (dropped samples) ends the packet */
+        if ((stream->n_samples > 0U) &&
+            (sample.counter != stream->next_counter))
+        {
+            (*stream->gap_count)++;
+            stream->carry = sample;
+            stream->has_carry = 1U;
+            return 1U;
+        }
+
+        if (stream->n_samples == 0U)
+        {
+            Cardiac_GATT_PutU32(&stream->buffer[2], sample.counter);
+            Cardiac_GATT_PutU32(&stream->buffer[6], sample.timestamp);
+            stream->first_tick = HAL_GetTick();
+        }
+
+        stream->pack(&stream->buffer[CARDIAC_STREAM_HEADER_SIZE +
+                                     ((uint16_t)stream->n_samples *
+                                      stream->bytes_per_sample)],
+                     &sample);
+        stream->n_samples++;
+        stream->next_counter = sample.counter + 1U;
+    }
+
+    if (stream->n_samples == 0U)
+    {
+        return 0U;
+    }
+
+    if ((stream->n_samples >= capacity) ||
+        ((HAL_GetTick() - stream->first_tick) >= CARDIAC_STREAM_FLUSH_MS))
+    {
+        return 1U;
+    }
+
+    return 0U;
+}
+
+
+static void Cardiac_GATT_StreamProcess(Cardiac_Stream *stream)
+{
+    Cardiac_StreamSample sample;
+    uint8_t capacity;
+    uint8_t ret;
+    uint32_t count;
+
+    if ((cardiac_gatt_connected == 0U) ||
+        ((cardiac_gatt_cccd_mask & stream->cccd_bit) == 0U))
+    {
+        /* Not subscribed: empty what is left in the queue */
+        Cardiac_GATT_StreamReset(stream);
+
+        for (count = 0U; count < CARDIAC_STREAM_MAX_DISCARD_PER_PROCESS; count++)
+        {
+            if (stream->read(&sample) == 0U)
+            {
+                break;
+            }
+        }
+        return;
+    }
+
+    capacity = Cardiac_GATT_StreamCapacity(stream);
+
+    if (capacity == 0U)
+    {
+        return;
+    }
+
+    for (count = 0U; count < CARDIAC_STREAM_MAX_PACKETS_PER_PROCESS; count++)
+    {
+        if (stream->ready == 0U)
+        {
+            stream->ready = Cardiac_GATT_StreamFill(stream, capacity);
+
+            if (stream->ready == 0U)
+            {
+                return;
+            }
+        }
+
+        Cardiac_GATT_PutU16(&stream->buffer[0], stream->seq);
+        stream->buffer[10] = stream->n_samples;
+        stream->buffer[11] = stream->format;
+
+        ret = Cardiac_GATT_Notify(*stream->char_handle,
+                                  stream->cccd_bit,
+                                  stream->buffer,
+                                  (uint16_t)(CARDIAC_STREAM_HEADER_SIZE +
+                                             ((uint16_t)stream->n_samples *
+                                              stream->bytes_per_sample)));
+
+        if ((ret == BLE_STATUS_INSUFFICIENT_RESOURCES) ||
+            (ret == BLE_STATUS_BUSY))
+        {
+            /* WB05N TX buffers full: retry the same packet later */
+            return;
+        }
+
+        if (ret == BLE_STATUS_SUCCESS)
+        {
+            (*stream->packet_count)++;
+            (*stream->sample_count) += stream->n_samples;
+        }
+        else
+        {
+            (*stream->error_count)++;
+        }
+
+        /* The sequence number also advances on errors, so gaps are visible */
+        stream->seq++;
+        stream->n_samples = 0U;
+        stream->ready = 0U;
+    }
+}
+
+
 static void Cardiac_GATT_UpdateStatus(void)
 {
     uint8_t status[CARDIAC_GATT_STATUS_SIZE];
@@ -442,6 +775,8 @@ void Cardiac_GATT_OnDisconnected(void)
 {
     cardiac_gatt_connected = 0U;
     cardiac_gatt_rpeak_has_pending = 0U;
+    Cardiac_GATT_StreamReset(&cardiac_ecg_stream);
+    Cardiac_GATT_StreamReset(&cardiac_scg_stream);
     cardiac_gatt_cccd_mask = 0U;
     cardiac_gatt_att_mtu = CARDIAC_ATT_MTU_DEFAULT;
 }
@@ -462,6 +797,8 @@ void Cardiac_GATT_Process(void)
     }
 
     Cardiac_GATT_ProcessRPeaks();
+    Cardiac_GATT_StreamProcess(&cardiac_ecg_stream);
+    Cardiac_GATT_StreamProcess(&cardiac_scg_stream);
 }
 
 

@@ -39,6 +39,14 @@ extern volatile uint8_t  cardiac_gatt_last_notify_status;
 extern volatile uint32_t cardiac_gatt_rpeak_sent_count;
 extern volatile uint32_t cardiac_gatt_rpeak_skipped_count;
 extern volatile uint32_t cardiac_gatt_rpeak_error_count;
+extern volatile uint32_t cardiac_gatt_ecg_packet_count;
+extern volatile uint32_t cardiac_gatt_ecg_sample_count;
+extern volatile uint32_t cardiac_gatt_ecg_error_count;
+extern volatile uint32_t cardiac_gatt_ecg_gap_count;
+extern volatile uint32_t cardiac_gatt_scg_packet_count;
+extern volatile uint32_t cardiac_gatt_scg_sample_count;
+extern volatile uint32_t cardiac_gatt_scg_error_count;
+extern volatile uint32_t cardiac_gatt_scg_gap_count;
 
 /* Register the Cardiac service and its characteristics.
  * Call after aci_gatt_srv_profile_init() and aci_gap_profile_init().
@@ -49,7 +57,7 @@ uint8_t Cardiac_GATT_Init(void);
 void Cardiac_GATT_OnConnected(uint16_t connection_handle);
 void Cardiac_GATT_OnDisconnected(void);
 
-/* Periodic work (Status update, R-peak notifications).
+/* Periodic work (Status update, R-peak, ECG and SCG notifications).
  * Called from the BLE thread.
  */
 void Cardiac_GATT_Process(void);
