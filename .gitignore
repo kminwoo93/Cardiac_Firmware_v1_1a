@@ -1,0 +1,12 @@
+# STM32CubeIDE build output (regenerated on every build)
+/Debug/
+/Release/
+
+# Object and build artifacts anywhere else
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
