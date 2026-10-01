@@ -22,6 +22,7 @@
 #include "stm32u5xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "cpu_usage.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -172,11 +173,12 @@ void DebugMon_Handler(void)
 void EXTI0_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI0_IRQn 0 */
-
+  CPU_USAGE_ISR_ENTER();
   /* USER CODE END EXTI0_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(DRDY_Pin);
   /* USER CODE BEGIN EXTI0_IRQn 1 */
   drdy_irq_count++;
+  CPU_USAGE_ISR_EXIT();
   /* USER CODE END EXTI0_IRQn 1 */
 }
 
@@ -186,11 +188,12 @@ void EXTI0_IRQHandler(void)
 void EXTI5_IRQHandler(void)
 {
   /* USER CODE BEGIN EXTI5_IRQn 0 */
-
+  CPU_USAGE_ISR_ENTER();
   /* USER CODE END EXTI5_IRQn 0 */
   HAL_GPIO_EXTI_IRQHandler(ICM_INT_Pin);
   /* USER CODE BEGIN EXTI5_IRQn 1 */
   icm_drdy_irq_count++;
+  CPU_USAGE_ISR_EXIT();
   /* USER CODE END EXTI5_IRQn 1 */
 }
 
@@ -200,11 +203,12 @@ void EXTI5_IRQHandler(void)
 void GPDMA1_Channel0_IRQHandler(void)
 {
   /* USER CODE BEGIN GPDMA1_Channel0_IRQn 0 */
-
+  CPU_USAGE_ISR_ENTER();
   /* USER CODE END GPDMA1_Channel0_IRQn 0 */
   HAL_DMA_IRQHandler(&handle_GPDMA1_Channel0);
   /* USER CODE BEGIN GPDMA1_Channel0_IRQn 1 */
 
+  CPU_USAGE_ISR_EXIT();
   /* USER CODE END GPDMA1_Channel0_IRQn 1 */
 }
 
@@ -214,11 +218,12 @@ void GPDMA1_Channel0_IRQHandler(void)
 void TIM2_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM2_IRQn 0 */
-
+  CPU_USAGE_ISR_ENTER();
   /* USER CODE END TIM2_IRQn 0 */
   HAL_TIM_IRQHandler(&htim2);
   /* USER CODE BEGIN TIM2_IRQn 1 */
 
+  CPU_USAGE_ISR_EXIT();
   /* USER CODE END TIM2_IRQn 1 */
 }
 
@@ -228,11 +233,12 @@ void TIM2_IRQHandler(void)
 void TIM6_IRQHandler(void)
 {
   /* USER CODE BEGIN TIM6_IRQn 0 */
-
+  CPU_USAGE_ISR_ENTER();
   /* USER CODE END TIM6_IRQn 0 */
   HAL_TIM_IRQHandler(&htim6);
   /* USER CODE BEGIN TIM6_IRQn 1 */
 
+  CPU_USAGE_ISR_EXIT();
   /* USER CODE END TIM6_IRQn 1 */
 }
 
@@ -242,11 +248,12 @@ void TIM6_IRQHandler(void)
 void USART2_IRQHandler(void)
 {
   /* USER CODE BEGIN USART2_IRQn 0 */
-
+  CPU_USAGE_ISR_ENTER();
   /* USER CODE END USART2_IRQn 0 */
   HAL_UART_IRQHandler(&huart2);
   /* USER CODE BEGIN USART2_IRQn 1 */
 
+  CPU_USAGE_ISR_EXIT();
   /* USER CODE END USART2_IRQn 1 */
 }
 
@@ -256,11 +263,12 @@ void USART2_IRQHandler(void)
 void OTG_HS_IRQHandler(void)
 {
   /* USER CODE BEGIN OTG_HS_IRQn 0 */
-
+  CPU_USAGE_ISR_ENTER();
   /* USER CODE END OTG_HS_IRQn 0 */
   HAL_PCD_IRQHandler(&hpcd_USB_OTG_HS);
   /* USER CODE BEGIN OTG_HS_IRQn 1 */
 
+  CPU_USAGE_ISR_EXIT();
   /* USER CODE END OTG_HS_IRQn 1 */
 }
 
