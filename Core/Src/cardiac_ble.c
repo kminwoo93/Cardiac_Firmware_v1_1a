@@ -12,6 +12,7 @@
 #include "stm32wb05n_gap.h"
 #include "stm32wb05n_gap_aci.h"
 #include "stm32wb05n_gatt_aci.h"
+#include "stm32wb05n_l2cap_aci.h"
 
 #include "tx_api.h"
 
@@ -39,6 +40,40 @@
 
 /* 2 s stabilization delay after HCI_Reset (same as ST SensorDemo) */
 #define CARDIAC_BLE_STABILIZATION_TICKS      (2U * TX_TIMER_TICKS_PER_SECOND)
+
+/*
+ * Link optimization requested after each connection.
+ *
+ * Data length: 251-byte LL payload so that one notification (up to
+ * MTU - 3 = 157 bytes) fits in a single radio packet instead of 6.
+ * 2120 us is the time of a 251-byte packet on the 1M PHY.
+ */
+#define CARDIAC_LINK_TX_OCTETS               251U
+#define CARDIAC_LINK_TX_TIME_US              2120U
+
+/* Preferred PHY: 2M for TX and RX (0x02 = LE 2M bit) */
+#define CARDIAC_LINK_PHY_2M                  0x02U
+
+/*
+ * Connection parameters (Apple accessory guidelines compliant):
+ * interval 15 - 30 ms (unit 1.25 ms), no peripheral latency,
+ * supervision timeout 4 s (unit 10 ms).
+ */
+#define CARDIAC_LINK_CONN_INTERVAL_MIN       12U
+#define CARDIAC_LINK_CONN_INTERVAL_MAX       24U
+#define CARDIAC_LINK_PERIPHERAL_LATENCY      0U
+#define CARDIAC_LINK_SUPERVISION_TIMEOUT     400U
+
+/* Delays after the connection (ms): let the phone finish service
+   discovery and its own MTU / PHY procedures first */
+#define CARDIAC_LINK_MTU_DELAY_MS            1000U
+#define CARDIAC_LINK_CONN_PARAM_DELAY_MS     2000U
+#define CARDIAC_LINK_READ_PHY_DELAY_MS       3000U
+#define CARDIAC_LINK_RETRY_MS                500U
+#define CARDIAC_LINK_MAX_RETRIES             3U
+
+/* Default ATT MTU before any exchange */
+#define CARDIAC_LINK_DEFAULT_ATT_MTU         23U
 
 
 
@@ -92,6 +127,32 @@ volatile uint32_t cardiac_ble_connection_count = 0;
 /* Last aci_gap_set_advertising_enable() status after a disconnection */
 volatile uint8_t  cardiac_ble_adv_restart_status = 0;
 
+/*
+ * Link parameters of the current connection.
+ * PHY: 1 = 1M, 2 = 2M, 3 = Coded. 0 = unknown.
+ */
+volatile uint32_t cardiac_ble_conn_interval_us = 0;
+volatile uint16_t cardiac_ble_conn_latency = 0;
+volatile uint16_t cardiac_ble_supervision_timeout_ms = 0;
+volatile uint8_t  cardiac_ble_tx_phy = 0;
+volatile uint8_t  cardiac_ble_rx_phy = 0;
+volatile uint16_t cardiac_ble_max_tx_octets = 0;
+volatile uint16_t cardiac_ble_max_rx_octets = 0;
+
+/* Status of each link optimization command (0xFF = not sent yet) */
+volatile uint8_t  cardiac_ble_event_mask_status = 0xFF;
+volatile uint8_t  cardiac_ble_default_dle_status = 0xFF;
+volatile uint8_t  cardiac_ble_default_phy_status = 0xFF;
+volatile uint8_t  cardiac_ble_dle_status = 0xFF;
+volatile uint8_t  cardiac_ble_phy_status = 0xFF;
+volatile uint8_t  cardiac_ble_phy_update_status = 0xFF;
+volatile uint8_t  cardiac_ble_mtu_req_status = 0xFF;
+volatile uint8_t  cardiac_ble_conn_param_req_status = 0xFF;
+/* L2CAP response: 0 = accepted, 1 = rejected, 0xFFFF = none */
+volatile uint16_t cardiac_ble_conn_param_result = 0xFFFF;
+volatile uint8_t  cardiac_ble_conn_update_status = 0xFF;
+volatile uint32_t cardiac_ble_conn_update_count = 0;
+
 
 /* -------------------------------------------------------------------------- */
 /* Private variables                                                          */
@@ -106,6 +167,23 @@ static Advertising_Set_Parameters_t cardiac_adv_set_params[1];
    hci_user_evt_proc()). */
 static volatile uint8_t cardiac_ble_restart_adv = 0;
 
+/* Link optimization sequence after a connection */
+typedef enum
+{
+    CARDIAC_LINK_IDLE = 0,
+    CARDIAC_LINK_DATA_LENGTH,
+    CARDIAC_LINK_PHY,
+    CARDIAC_LINK_MTU,
+    CARDIAC_LINK_CONN_PARAM,
+    CARDIAC_LINK_READ_PHY,
+    CARDIAC_LINK_DONE
+} Cardiac_LinkStep;
+
+static volatile uint8_t cardiac_link_step = CARDIAC_LINK_IDLE;
+static uint32_t cardiac_link_connect_tick = 0;
+static uint32_t cardiac_link_retry_tick = 0;
+static uint8_t  cardiac_link_retries = 0;
+
 
 /* -------------------------------------------------------------------------- */
 /* Private function prototypes                                                */
@@ -115,6 +193,8 @@ static void Cardiac_BLE_UserEvtRx(void *pData);
 static tBleStatus Cardiac_BLE_StackInit(void);
 static tBleStatus Cardiac_BLE_StartAdvertising(void);
 static void Cardiac_BLE_WaitBoot(void);
+static void Cardiac_BLE_ConfigureLinkDefaults(void);
+static void Cardiac_BLE_LinkProcess(void);
 
 
 /* -------------------------------------------------------------------------- */
@@ -220,6 +300,8 @@ void Cardiac_BLE_Process(void)
      * Called continuously from the BLE thread.
      */
     hci_user_evt_proc();
+
+    Cardiac_BLE_LinkProcess();
 
     Cardiac_GATT_Process();
 
@@ -429,7 +511,177 @@ static tBleStatus Cardiac_BLE_StackInit(void)
         return ret;
     }
 
+
+    /* ---------------------------------------------------------------------- */
+    /* Link defaults (failures are reported but not fatal)                    */
+    /* ---------------------------------------------------------------------- */
+
+    Cardiac_BLE_ConfigureLinkDefaults();
+
     return BLE_STATUS_SUCCESS;
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Link optimization                                                          */
+/* -------------------------------------------------------------------------- */
+
+static void Cardiac_BLE_ConfigureLinkDefaults(void)
+{
+    /*
+     * LE events used by this application:
+     * bit 0  Connection Complete          bit 6  Data Length Change
+     * bit 1  Advertising Report           bit 7  Read Local P-256 Key Complete
+     * bit 2  Connection Update Complete   bit 8  Generate DHKey Complete
+     * bit 3  Read Remote Features         bit 9  Enhanced Connection Complete
+     * bit 4  LTK Request                  bit 11 PHY Update Complete
+     * Bit 5 (Remote Connection Parameter Request) stays disabled so that
+     * the controller handles the central's requests by itself.
+     */
+    uint8_t le_event_mask[8] = { 0xDFU, 0x0BU, 0x00U, 0x00U,
+                                 0x00U, 0x00U, 0x00U, 0x00U };
+
+    cardiac_ble_event_mask_status = hci_le_set_event_mask(le_event_mask);
+
+    cardiac_ble_default_dle_status = hci_le_write_suggested_default_data_length(
+            CARDIAC_LINK_TX_OCTETS,
+            CARDIAC_LINK_TX_TIME_US);
+
+    /* ALL_PHYS = 0: the TX / RX preferences below apply */
+    cardiac_ble_default_phy_status = hci_le_set_default_phy(
+            0x00U,
+            CARDIAC_LINK_PHY_2M,
+            CARDIAC_LINK_PHY_2M);
+}
+
+
+static void Cardiac_BLE_LinkNext(uint8_t step)
+{
+    cardiac_link_step = step;
+    cardiac_link_retries = 0U;
+}
+
+
+/* Returns 1 when the command should be tried again later */
+static uint8_t Cardiac_BLE_LinkRetry(tBleStatus ret, uint32_t now)
+{
+    if (((ret == BLE_STATUS_BUSY) || (ret == BLE_STATUS_INSUFFICIENT_RESOURCES)) &&
+        (cardiac_link_retries < CARDIAC_LINK_MAX_RETRIES))
+    {
+        cardiac_link_retries++;
+        cardiac_link_retry_tick = now;
+        return 1U;
+    }
+
+    return 0U;
+}
+
+
+/*
+ * Runs one step per call, from the BLE thread (never from an event
+ * callback, which already runs inside hci_user_evt_proc()).
+ */
+static void Cardiac_BLE_LinkProcess(void)
+{
+    uint32_t now = HAL_GetTick();
+    uint32_t elapsed = now - cardiac_link_connect_tick;
+    uint16_t conn = cardiac_ble_conn_handle;
+    tBleStatus ret;
+    uint8_t tx_phy = 0U;
+    uint8_t rx_phy = 0U;
+
+    if ((cardiac_ble_connected == 0U) ||
+        (cardiac_link_step == CARDIAC_LINK_IDLE) ||
+        (cardiac_link_step == CARDIAC_LINK_DONE))
+    {
+        return;
+    }
+
+    if ((cardiac_link_retries != 0U) &&
+        ((now - cardiac_link_retry_tick) < CARDIAC_LINK_RETRY_MS))
+    {
+        return;
+    }
+
+    switch (cardiac_link_step)
+    {
+    case CARDIAC_LINK_DATA_LENGTH:
+        ret = hci_le_set_data_length(conn,
+                                     CARDIAC_LINK_TX_OCTETS,
+                                     CARDIAC_LINK_TX_TIME_US);
+        cardiac_ble_dle_status = ret;
+        if (Cardiac_BLE_LinkRetry(ret, now) == 0U)
+        {
+            Cardiac_BLE_LinkNext(CARDIAC_LINK_PHY);
+        }
+        break;
+
+    case CARDIAC_LINK_PHY:
+        ret = hci_le_set_phy(conn, 0x00U,
+                             CARDIAC_LINK_PHY_2M,
+                             CARDIAC_LINK_PHY_2M,
+                             0x0000U);
+        cardiac_ble_phy_status = ret;
+        if (Cardiac_BLE_LinkRetry(ret, now) == 0U)
+        {
+            Cardiac_BLE_LinkNext(CARDIAC_LINK_MTU);
+        }
+        break;
+
+    case CARDIAC_LINK_MTU:
+        if (elapsed < CARDIAC_LINK_MTU_DELAY_MS)
+        {
+            break;
+        }
+        /* Only when the phone has not exchanged the MTU by itself */
+        if (cardiac_gatt_att_mtu <= CARDIAC_LINK_DEFAULT_ATT_MTU)
+        {
+            ret = aci_gatt_clt_exchange_config(conn);
+            cardiac_ble_mtu_req_status = ret;
+            if (Cardiac_BLE_LinkRetry(ret, now) != 0U)
+            {
+                break;
+            }
+        }
+        Cardiac_BLE_LinkNext(CARDIAC_LINK_CONN_PARAM);
+        break;
+
+    case CARDIAC_LINK_CONN_PARAM:
+        if (elapsed < CARDIAC_LINK_CONN_PARAM_DELAY_MS)
+        {
+            break;
+        }
+        ret = aci_l2cap_connection_parameter_update_req(
+                conn,
+                CARDIAC_LINK_CONN_INTERVAL_MIN,
+                CARDIAC_LINK_CONN_INTERVAL_MAX,
+                CARDIAC_LINK_PERIPHERAL_LATENCY,
+                CARDIAC_LINK_SUPERVISION_TIMEOUT);
+        cardiac_ble_conn_param_req_status = ret;
+        if (Cardiac_BLE_LinkRetry(ret, now) == 0U)
+        {
+            Cardiac_BLE_LinkNext(CARDIAC_LINK_READ_PHY);
+        }
+        break;
+
+    case CARDIAC_LINK_READ_PHY:
+        if (elapsed < CARDIAC_LINK_READ_PHY_DELAY_MS)
+        {
+            break;
+        }
+        /* Covers the case where the PHY Update event is not reported */
+        if (hci_le_read_phy(conn, &tx_phy, &rx_phy) == BLE_STATUS_SUCCESS)
+        {
+            cardiac_ble_tx_phy = tx_phy;
+            cardiac_ble_rx_phy = rx_phy;
+        }
+        Cardiac_BLE_LinkNext(CARDIAC_LINK_DONE);
+        break;
+
+    default:
+        Cardiac_BLE_LinkNext(CARDIAC_LINK_DONE);
+        break;
+    }
 }
 
 
@@ -661,7 +913,21 @@ void aci_blue_initialized_event(uint8_t Reason_Code)
 }
 
 
-static void Cardiac_BLE_OnConnected(uint8_t Status, uint16_t Connection_Handle)
+static void Cardiac_BLE_SetConnParams(uint16_t Connection_Interval,
+                                      uint16_t Peripheral_Latency,
+                                      uint16_t Supervision_Timeout)
+{
+    cardiac_ble_conn_interval_us = (uint32_t)Connection_Interval * 1250U;
+    cardiac_ble_conn_latency = Peripheral_Latency;
+    cardiac_ble_supervision_timeout_ms = (uint16_t)(Supervision_Timeout * 10U);
+}
+
+
+static void Cardiac_BLE_OnConnected(uint8_t Status,
+                                    uint16_t Connection_Handle,
+                                    uint16_t Connection_Interval,
+                                    uint16_t Peripheral_Latency,
+                                    uint16_t Supervision_Timeout)
 {
     if (Status == BLE_STATUS_SUCCESS)
     {
@@ -669,7 +935,28 @@ static void Cardiac_BLE_OnConnected(uint8_t Status, uint16_t Connection_Handle)
         cardiac_ble_connected = 1U;
         cardiac_ble_connection_count++;
 
+        Cardiac_BLE_SetConnParams(Connection_Interval,
+                                  Peripheral_Latency,
+                                  Supervision_Timeout);
+
+        /* Until the controller reports otherwise */
+        cardiac_ble_tx_phy = 1U;
+        cardiac_ble_rx_phy = 1U;
+        cardiac_ble_max_tx_octets = 27U;
+        cardiac_ble_max_rx_octets = 27U;
+        cardiac_ble_dle_status = 0xFFU;
+        cardiac_ble_phy_status = 0xFFU;
+        cardiac_ble_phy_update_status = 0xFFU;
+        cardiac_ble_mtu_req_status = 0xFFU;
+        cardiac_ble_conn_param_req_status = 0xFFU;
+        cardiac_ble_conn_param_result = 0xFFFFU;
+        cardiac_ble_conn_update_status = 0xFFU;
+
         Cardiac_GATT_OnConnected(Connection_Handle);
+
+        /* Start the link optimization sequence (Cardiac_BLE_LinkProcess) */
+        cardiac_link_connect_tick = HAL_GetTick();
+        Cardiac_BLE_LinkNext(CARDIAC_LINK_DATA_LENGTH);
     }
 }
 
@@ -684,7 +971,8 @@ void hci_le_connection_complete_event(uint8_t Status,
                                       uint16_t Supervision_Timeout,
                                       uint8_t Central_Clock_Accuracy)
 {
-    Cardiac_BLE_OnConnected(Status, Connection_Handle);
+    Cardiac_BLE_OnConnected(Status, Connection_Handle, Connection_Interval,
+                            Peripheral_Latency, Supervision_Timeout);
 }
 
 
@@ -700,7 +988,8 @@ void hci_le_enhanced_connection_complete_event(uint8_t Status,
                                                uint16_t Supervision_Timeout,
                                                uint8_t Central_Clock_Accuracy)
 {
-    Cardiac_BLE_OnConnected(Status, Connection_Handle);
+    Cardiac_BLE_OnConnected(Status, Connection_Handle, Connection_Interval,
+                            Peripheral_Latency, Supervision_Timeout);
 }
 
 
@@ -718,7 +1007,8 @@ void hci_le_enhanced_connection_complete_v2_event(uint8_t Status,
                                                   uint8_t Advertising_Handle,
                                                   uint16_t Sync_Handle)
 {
-    Cardiac_BLE_OnConnected(Status, Connection_Handle);
+    Cardiac_BLE_OnConnected(Status, Connection_Handle, Connection_Interval,
+                            Peripheral_Latency, Supervision_Timeout);
 }
 
 
@@ -730,10 +1020,62 @@ void hci_disconnection_complete_event(uint8_t Status,
     {
         cardiac_ble_connected = 0U;
         cardiac_ble_disconnect_reason = Reason;
+        cardiac_link_step = CARDIAC_LINK_IDLE;
 
         Cardiac_GATT_OnDisconnected();
 
         /* Advertising stopped when the connection was created */
         cardiac_ble_restart_adv = 1U;
     }
+}
+
+
+void hci_le_connection_update_complete_event(uint8_t Status,
+                                             uint16_t Connection_Handle,
+                                             uint16_t Connection_Interval,
+                                             uint16_t Peripheral_Latency,
+                                             uint16_t Supervision_Timeout)
+{
+    cardiac_ble_conn_update_status = Status;
+
+    if (Status == BLE_STATUS_SUCCESS)
+    {
+        cardiac_ble_conn_update_count++;
+        Cardiac_BLE_SetConnParams(Connection_Interval,
+                                  Peripheral_Latency,
+                                  Supervision_Timeout);
+    }
+}
+
+
+void hci_le_data_length_change_event(uint16_t Connection_Handle,
+                                     uint16_t MaxTxOctets,
+                                     uint16_t MaxTxTime,
+                                     uint16_t MaxRxOctets,
+                                     uint16_t MaxRxTime)
+{
+    cardiac_ble_max_tx_octets = MaxTxOctets;
+    cardiac_ble_max_rx_octets = MaxRxOctets;
+}
+
+
+void hci_le_phy_update_complete_event(uint8_t Status,
+                                      uint16_t Connection_Handle,
+                                      uint8_t TX_PHY,
+                                      uint8_t RX_PHY)
+{
+    cardiac_ble_phy_update_status = Status;
+
+    if (Status == BLE_STATUS_SUCCESS)
+    {
+        cardiac_ble_tx_phy = TX_PHY;
+        cardiac_ble_rx_phy = RX_PHY;
+    }
+}
+
+
+void aci_l2cap_connection_update_resp_event(uint16_t Connection_Handle,
+                                            uint16_t Result)
+{
+    cardiac_ble_conn_param_result = Result;
 }
