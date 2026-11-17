@@ -333,8 +333,7 @@ static void USART2_MspInit(UART_HandleTypeDef* uartHandle)
 
     GPIO_InitStruct.Pin = BUS_USART2_RX_GPIO_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    /* Keep RX idle-high while the STM32WB05N TX is not driven (reset/boot) */
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = BUS_USART2_RX_GPIO_AF;
     HAL_GPIO_Init(BUS_USART2_RX_GPIO_PORT, &GPIO_InitStruct);
@@ -381,7 +380,17 @@ static void USART2_MspInit(UART_HandleTypeDef* uartHandle)
     HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
   /* USER CODE BEGIN USART2_MspInit 1 */
-
+    /*
+     * Keep RX idle-high while the STM32WB05N TX is not driven (reset/boot).
+     * Set here, after the generated RX pin setup (GPIO_NOPULL), so that the
+     * pull-up survives code generation. The UART is not enabled yet.
+     */
+    GPIO_InitStruct.Pin = BUS_USART2_RX_GPIO_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = BUS_USART2_RX_GPIO_AF;
+    HAL_GPIO_Init(BUS_USART2_RX_GPIO_PORT, &GPIO_InitStruct);
   /* USER CODE END USART2_MspInit 1 */
 }
 

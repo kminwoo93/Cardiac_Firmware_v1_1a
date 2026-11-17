@@ -65,6 +65,7 @@
 									<listOptionValue builtIn="false" value="TX_SINGLE_MODE_NON_SECURE=1"/>
 									<listOptionValue builtIn="false" value="TX_ENABLE_EXECUTION_CHANGE_NOTIFY"/>
 									<listOptionValue builtIn="false" value="UX_INCLUDE_USER_DEFINE_FILE"/>
+									<listOptionValue builtIn="false" value="HCI_READ_PACKET_NUM_MAX=16"/>
 									<listOptionValue builtIn="false" value="USE_HAL_DRIVER"/>
 									<listOptionValue builtIn="false" value="STM32U5A5xx"/>
 								</option>
@@ -185,6 +186,7 @@
 									<listOptionValue builtIn="false" value="TX_INCLUDE_USER_DEFINE_FILE"/>
 									<listOptionValue builtIn="false" value="TX_SINGLE_MODE_NON_SECURE=1"/>
 									<listOptionValue builtIn="false" value="UX_INCLUDE_USER_DEFINE_FILE"/>
+									<listOptionValue builtIn="false" value="HCI_READ_PACKET_NUM_MAX=16"/>
 									<listOptionValue builtIn="false" value="USE_HAL_DRIVER"/>
 									<listOptionValue builtIn="false" value="STM32U5A5xx"/>
 								</option>
