@@ -28,6 +28,7 @@
 #include "icm20948.h"
 #include "cardiac_ble.h"
 #include "cardiac_gatt.h"
+#include "max30205.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -64,6 +65,8 @@ TX_QUEUE ble_rpeak_queue;
  */
 TX_QUEUE ble_ecg_queue;
 TX_QUEUE ble_scg_queue;
+/* Temperature measurements read by the BLE thread */
+TX_QUEUE ble_temp_queue;
 /*
  * Timestamp event queues written by the EXTI callbacks
  * and read by the acquisition threads.
@@ -87,6 +90,8 @@ static ULONG ble_ecg_queue_storage[
     BLE_ECG_QUEUE_CAPACITY * BLE_ECG_QUEUE_MESSAGE_SIZE];
 static ULONG ble_scg_queue_storage[
     BLE_SCG_QUEUE_CAPACITY * BLE_SCG_QUEUE_MESSAGE_SIZE];
+static ULONG ble_temp_queue_storage[
+    BLE_TEMP_QUEUE_CAPACITY * BLE_TEMP_QUEUE_MESSAGE_SIZE];
 /*
  * Static storage for timestamp queues.
  *
@@ -129,6 +134,20 @@ TX_THREAD ecg_processing_thread;
  * BLE processing thread control block.
  */
 TX_THREAD ble_processing_thread;
+
+/*
+ * Temperature thread (MAX30205) and its diagnostics.
+ */
+TX_THREAD temperature_thread;
+
+volatile uint32_t temp_measure_count = 0U;      /* attempts */
+volatile uint32_t temp_valid_count = 0U;
+volatile uint32_t temp_error_count = 0U;
+volatile uint32_t ble_temp_queue_overflow_count = 0U;
+volatile uint8_t  temp_sensor_ready = 0U;
+volatile uint8_t  temp_last_status = 0xFFU;     /* MAX30205_Status */
+volatile int16_t  temp_last_raw = 0;
+volatile int32_t  temp_last_milli_c = 0;
 
 volatile uint32_t ecg_processing_input_count = 0U;
 volatile uint32_t ecg_rpeak_detected_count = 0U;
@@ -502,6 +521,49 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
           BLE_PROCESSING_THREAD_STACK_SIZE,
           BLE_PROCESSING_THREAD_PRIORITY,
           BLE_PROCESSING_THREAD_PRIORITY,
+          TX_NO_TIME_SLICE,
+          TX_AUTO_START) != TX_SUCCESS)
+  {
+      return TX_THREAD_ERROR;
+  }
+
+  /*
+   * Temperature measurement queue and thread.
+   */
+  if (sizeof(BLE_TempSample) !=
+      (BLE_TEMP_QUEUE_MESSAGE_SIZE * sizeof(ULONG)))
+  {
+      return TX_SIZE_ERROR;
+  }
+
+  if (tx_queue_create(&ble_temp_queue, "ble_temp_queue",
+                      BLE_TEMP_QUEUE_MESSAGE_SIZE,
+                      ble_temp_queue_storage,
+                      sizeof(ble_temp_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  CHAR *temp_stack_pointer;
+
+  if (tx_byte_allocate(
+          byte_pool,
+          (VOID **)&temp_stack_pointer,
+          TEMP_THREAD_STACK_SIZE,
+          TX_NO_WAIT) != TX_SUCCESS)
+  {
+      return TX_POOL_ERROR;
+  }
+
+  if (tx_thread_create(
+          &temperature_thread,
+          "temperature_thread",
+          temperature_thread_entry,
+          0U,
+          temp_stack_pointer,
+          TEMP_THREAD_STACK_SIZE,
+          TEMP_THREAD_PRIORITY,
+          TEMP_THREAD_PRIORITY,
           TX_NO_TIME_SLICE,
           TX_AUTO_START) != TX_SUCCESS)
   {
@@ -1143,6 +1205,117 @@ void ble_processing_thread_entry(ULONG thread_input)
         Cardiac_BLE_Process();
 
         tx_thread_sleep(BLE_PROCESSING_THREAD_SLEEP_TICKS);
+    }
+}
+
+
+/* Milliseconds to ThreadX ticks, rounded up */
+#define TEMP_MS_TO_TICKS(ms) \
+    ((ULONG)((((ULONG)(ms)) * TX_TIMER_TICKS_PER_SECOND + 999UL) / 1000UL))
+
+/*
+ * One MAX30205 measurement: start a one-shot conversion, sleep while the
+ * sensor converts, then read the result.
+ */
+static MAX30205_Status Temperature_Measure(int16_t *raw)
+{
+    MAX30205_Status status;
+
+    status = MAX30205_StartOneShot();
+    if (status != MAX30205_OK)
+    {
+        return status;
+    }
+
+    /* +1 tick: tx_thread_sleep(n) may return up to one tick early */
+    tx_thread_sleep(TEMP_MS_TO_TICKS(MAX30205_CONVERSION_TIME_MS) + 1U);
+
+    return MAX30205_ReadRaw(raw);
+}
+
+
+/**
+ * @brief Temperature thread.
+ *
+ * Measures the MAX30205 every TEMP_MEASURE_PERIOD_MS and posts the result
+ * (or an error flag) to ble_temp_queue. All I2C1 traffic happens here.
+ * After an error the bus is recovered and the sensor initialized again
+ * before the next measurement.
+ */
+void temperature_thread_entry(ULONG thread_input)
+{
+    BLE_TempSample sample;
+    MAX30205_Status status;
+    int16_t raw = 0;
+    uint16_t seq = 0U;
+    ULONG next_tick;
+    ULONG now;
+
+    (void)thread_input;
+
+    next_tick = tx_time_get() + TEMP_MS_TO_TICKS(TEMP_FIRST_MEASURE_DELAY_MS);
+
+    while (1)
+    {
+        /* Fixed-rate schedule; resynchronize if a period was missed */
+        now = tx_time_get();
+        if ((LONG)(next_tick - now) > 0)
+        {
+            tx_thread_sleep(next_tick - now);
+        }
+        else
+        {
+            next_tick = now;
+        }
+        next_tick += TEMP_MS_TO_TICKS(TEMP_MEASURE_PERIOD_MS);
+
+        temp_measure_count++;
+
+        status = MAX30205_OK;
+        if (temp_sensor_ready == 0U)
+        {
+            status = MAX30205_Init();
+            temp_sensor_ready = (status == MAX30205_OK) ? 1U : 0U;
+        }
+
+        if (status == MAX30205_OK)
+        {
+            status = Temperature_Measure(&raw);
+        }
+
+        temp_last_status = (uint8_t)status;
+
+        sample.timestamp_ms = HAL_GetTick();
+        sample.seq = seq++;
+        sample.reserved[0] = 0U;
+        sample.reserved[1] = 0U;
+        sample.reserved[2] = 0U;
+
+        if (status == MAX30205_OK)
+        {
+            sample.raw = raw;
+            sample.flags = TEMP_FLAG_VALID;
+
+            temp_last_raw = raw;
+            temp_last_milli_c = MAX30205_RawToMilliCelsius(raw);
+            temp_valid_count++;
+        }
+        else
+        {
+            sample.raw = 0;
+            sample.flags = TEMP_FLAG_SENSOR_ERROR;
+
+            temp_error_count++;
+
+            /* Reset the bus and re-initialize the sensor next time */
+            MAX30205_RecoverBus();
+            temp_sensor_ready = 0U;
+        }
+
+        if (tx_queue_send(&ble_temp_queue, &sample, TX_NO_WAIT) != TX_SUCCESS)
+        {
+            ble_temp_queue_overflow_count++;
+        }
     }
 }
 

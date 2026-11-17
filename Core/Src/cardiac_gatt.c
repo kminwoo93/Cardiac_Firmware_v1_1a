@@ -24,11 +24,12 @@
 #define CARDIAC_UUID_SCG          0x0003U
 #define CARDIAC_UUID_RPEAK        0x0004U
 #define CARDIAC_UUID_STATUS       0x0005U
+#define CARDIAC_UUID_TEMP         0x0006U
 
 /*
  * Attribute handles reserved for the service:
- * 1 service declaration + 4 characteristics x (declaration, value, CCCD),
- * plus a margin for later characteristics (Control, ECG CH1, ...).
+ * 1 service declaration + 5 characteristics x (declaration, value, CCCD)
+ * = 16, plus a margin for later characteristics (Control, ECG CH1, ...).
  */
 #define CARDIAC_SERVICE_MAX_ATTR_RECORDS   20U
 
@@ -51,6 +52,12 @@
 #define CARDIAC_ATT_MTU_DEFAULT            23U
 
 #define CARDIAC_STATUS_PERIOD_MS           1000U
+
+/* Window of the notification rate measurement */
+#define CARDIAC_NOTIFY_RATE_WINDOW_MS      1000U
+
+/* Maximum temperature samples taken from the queue per Cardiac_GATT_Process() */
+#define CARDIAC_TEMP_MAX_PER_PROCESS       4U
 
 /* R-peak notification payload (fits the default 23-byte ATT MTU) */
 #define CARDIAC_RPEAK_PAYLOAD_SIZE         20U
@@ -115,12 +122,30 @@ volatile uint32_t cardiac_gatt_scg_sample_count = 0;
 volatile uint32_t cardiac_gatt_scg_error_count = 0;
 volatile uint32_t cardiac_gatt_scg_gap_count = 0;
 
+/* Temperature notifications */
+volatile uint32_t cardiac_gatt_temp_sent_count = 0;
+/* Notifications dropped after an error other than "buffers full" */
+volatile uint32_t cardiac_gatt_temp_error_count = 0;
+/*
+ * Result of registering the Temperature characteristic (0xFF = not yet).
+ * A failure leaves the other characteristics working.
+ */
+volatile uint8_t  cardiac_gatt_temp_init_status = 0xFF;
+
+/* Notification rate (see cardiac_gatt.h) */
+volatile uint32_t cardiac_gatt_notify_per_s = 0;
+volatile uint32_t cardiac_gatt_notify_per_s_peak = 0;
+volatile uint32_t cardiac_gatt_notify_per_event_x100 = 0;
+volatile uint32_t cardiac_gatt_notify_per_event_peak_x100 = 0;
+volatile uint32_t cardiac_gatt_notify_tx_full_count = 0;
+
 /* Attribute handles (characteristic declaration handles) */
 volatile uint16_t cardiac_gatt_service_handle = 0;
 volatile uint16_t cardiac_gatt_ecg_char_handle = 0;
 volatile uint16_t cardiac_gatt_scg_char_handle = 0;
 volatile uint16_t cardiac_gatt_rpeak_char_handle = 0;
 volatile uint16_t cardiac_gatt_status_char_handle = 0;
+volatile uint16_t cardiac_gatt_temp_char_handle = 0;
 
 
 /* -------------------------------------------------------------------------- */
@@ -129,6 +154,9 @@ volatile uint16_t cardiac_gatt_status_char_handle = 0;
 
 /* Defined in hci_tl_interface.c */
 extern volatile uint32_t hci_tl_uart_rx_restart_count;
+
+/* Defined in cardiac_ble.c */
+extern volatile uint32_t cardiac_ble_conn_interval_us;
 
 static const uint8_t cardiac_uuid_base[16] =
 {
@@ -140,6 +168,9 @@ static volatile uint8_t  cardiac_gatt_connected = 0;
 static volatile uint16_t cardiac_gatt_conn_handle = 0;
 
 static uint32_t cardiac_gatt_last_status_tick = 0;
+
+static uint32_t cardiac_gatt_rate_window_tick = 0;
+static uint32_t cardiac_gatt_rate_window_ok_count = 0;
 
 /* One ECG or SCG sample in a common form */
 typedef struct
@@ -190,6 +221,10 @@ typedef struct
 /* R-peak waiting for free WB05N TX buffers */
 static uint8_t  cardiac_gatt_rpeak_pending[CARDIAC_RPEAK_PAYLOAD_SIZE];
 static uint8_t  cardiac_gatt_rpeak_has_pending = 0;
+
+/* Latest temperature waiting to be notified (retried while TX is full) */
+static uint8_t  cardiac_gatt_temp_payload[CARDIAC_GATT_TEMP_SIZE];
+static uint8_t  cardiac_gatt_temp_has_pending = 0;
 
 
 /* -------------------------------------------------------------------------- */
@@ -253,7 +288,8 @@ static uint16_t Cardiac_GATT_Saturate16(uint32_t value)
  * Status payload, little-endian (version 1, 20 bytes):
  *
  *  0  u8   version
- *  1  u8   CCCD mask (bit0 ECG, bit1 SCG, bit2 R-peak, bit3 Status)
+ *  1  u8   CCCD mask (bit0 ECG, bit1 SCG, bit2 R-peak, bit3 Status,
+ *           bit4 Temperature)
  *  2  u16  ATT MTU
  *  4  u32  uptime in ms
  *  8  u32  notifications sent
@@ -305,6 +341,12 @@ static uint8_t Cardiac_GATT_Notify(uint16_t char_handle,
     else
     {
         cardiac_gatt_notify_fail_count++;
+
+        if ((ret == BLE_STATUS_INSUFFICIENT_RESOURCES) ||
+            (ret == BLE_STATUS_BUSY))
+        {
+            cardiac_gatt_notify_tx_full_count++;
+        }
     }
 
     return ret;
@@ -682,6 +724,148 @@ static void Cardiac_GATT_UpdateStatus(void)
 
 
 /* -------------------------------------------------------------------------- */
+/* Temperature                                                                */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Temperature payload, little-endian (version 1, 10 bytes):
+ *
+ *  0  u8   version
+ *  1  u8   flags: bit0 = value valid, bit1 = sensor / I2C error
+ *  2  u16  sequence number (+1 per measurement attempt, wraps)
+ *  4  u32  timestamp in ms (HAL tick, same time base as Status uptime)
+ *  8  i16  MAX30205 raw value, 1/256 C per LSB (0 when not valid)
+ *
+ * Before the first measurement the value reads as flags = 0.
+ */
+static void Cardiac_GATT_BuildTemp(const BLE_TempSample *sample,
+                                   uint8_t buffer[CARDIAC_GATT_TEMP_SIZE])
+{
+    buffer[0] = CARDIAC_GATT_TEMP_VERSION;
+    buffer[1] = sample->flags;
+    Cardiac_GATT_PutU16(&buffer[2], sample->seq);
+    Cardiac_GATT_PutU32(&buffer[4], sample->timestamp_ms);
+    Cardiac_GATT_PutU16(&buffer[8], (uint16_t)sample->raw);
+}
+
+
+/* Latest value for Read requests */
+static void Cardiac_GATT_WriteTempValue(void)
+{
+    (void)aci_gatt_srv_write_handle_value_nwk(
+            cardiac_gatt_temp_char_handle + 1U,
+            0,
+            CARDIAC_GATT_TEMP_SIZE,
+            cardiac_gatt_temp_payload);
+}
+
+
+static void Cardiac_GATT_ProcessTemperature(void)
+{
+    BLE_TempSample sample;
+    uint8_t received = 0U;
+    uint8_t ret;
+    uint32_t count;
+
+    /* Keep only the newest measurement; normally there is just one */
+    for (count = 0U; count < CARDIAC_TEMP_MAX_PER_PROCESS; count++)
+    {
+        if (tx_queue_receive(&ble_temp_queue, &sample, TX_NO_WAIT) !=
+            TX_SUCCESS)
+        {
+            break;
+        }
+        received = 1U;
+    }
+
+    if (cardiac_gatt_temp_init_status != BLE_STATUS_SUCCESS)
+    {
+        return;
+    }
+
+    if (received != 0U)
+    {
+        Cardiac_GATT_BuildTemp(&sample, cardiac_gatt_temp_payload);
+        Cardiac_GATT_WriteTempValue();
+        /* A newer value replaces one still waiting for TX buffers */
+        cardiac_gatt_temp_has_pending = 1U;
+    }
+
+    if (cardiac_gatt_temp_has_pending == 0U)
+    {
+        return;
+    }
+
+    if ((cardiac_gatt_connected == 0U) ||
+        ((cardiac_gatt_cccd_mask & CARDIAC_GATT_CCCD_TEMP) == 0U))
+    {
+        /* Not subscribed: the value stays readable */
+        cardiac_gatt_temp_has_pending = 0U;
+        return;
+    }
+
+    ret = Cardiac_GATT_Notify(cardiac_gatt_temp_char_handle,
+                              CARDIAC_GATT_CCCD_TEMP,
+                              cardiac_gatt_temp_payload,
+                              CARDIAC_GATT_TEMP_SIZE);
+
+    if (ret == BLE_STATUS_SUCCESS)
+    {
+        cardiac_gatt_temp_sent_count++;
+        cardiac_gatt_temp_has_pending = 0U;
+    }
+    else if ((ret != BLE_STATUS_INSUFFICIENT_RESOURCES) &&
+             (ret != BLE_STATUS_BUSY))
+    {
+        cardiac_gatt_temp_error_count++;
+        cardiac_gatt_temp_has_pending = 0U;
+    }
+    /* else: WB05N TX buffers full, retry on the next call */
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Notification rate                                                          */
+/* -------------------------------------------------------------------------- */
+
+static void Cardiac_GATT_UpdateNotifyRate(void)
+{
+    uint32_t now = HAL_GetTick();
+    uint32_t elapsed = now - cardiac_gatt_rate_window_tick;
+    uint32_t ok_count;
+    uint32_t per_s;
+    uint32_t per_event_x100;
+
+    if (elapsed < CARDIAC_NOTIFY_RATE_WINDOW_MS)
+    {
+        return;
+    }
+
+    ok_count = cardiac_gatt_notify_ok_count;
+    per_s = ((ok_count - cardiac_gatt_rate_window_ok_count) * 1000U) / elapsed;
+
+    cardiac_gatt_rate_window_ok_count = ok_count;
+    cardiac_gatt_rate_window_tick = now;
+
+    /* per event x100 = per_s * interval_us / 1e6 * 100 */
+    per_event_x100 = (uint32_t)(((uint64_t)per_s *
+                                 cardiac_ble_conn_interval_us) / 10000U);
+
+    cardiac_gatt_notify_per_s = per_s;
+    cardiac_gatt_notify_per_event_x100 = per_event_x100;
+
+    if (per_s > cardiac_gatt_notify_per_s_peak)
+    {
+        cardiac_gatt_notify_per_s_peak = per_s;
+    }
+    if (per_event_x100 > cardiac_gatt_notify_per_event_peak_x100)
+    {
+        cardiac_gatt_notify_per_event_peak_x100 = per_event_x100;
+    }
+}
+
+
+/* -------------------------------------------------------------------------- */
 /* Public functions                                                           */
 /* -------------------------------------------------------------------------- */
 
@@ -752,9 +936,32 @@ uint8_t Cardiac_GATT_Init(void)
     }
     cardiac_gatt_status_char_handle = handle;
 
+    /*
+     * Temperature, registered last. The WB05N GATT database shares a small
+     * buffer with the advertising data, so a failure here is not fatal:
+     * the other characteristics keep working and
+     * cardiac_gatt_temp_init_status holds the error code.
+     */
+    ret = Cardiac_GATT_AddChar(CARDIAC_UUID_TEMP,
+                               CARDIAC_GATT_TEMP_SIZE,
+                               CHAR_PROP_READ | CHAR_PROP_NOTIFY,
+                               &handle);
+    cardiac_gatt_temp_init_status = ret;
+    if (ret == BLE_STATUS_SUCCESS)
+    {
+        cardiac_gatt_temp_char_handle = handle;
+
+        /* No measurement yet: version only, flags = 0 */
+        memset(cardiac_gatt_temp_payload, 0, sizeof(cardiac_gatt_temp_payload));
+        cardiac_gatt_temp_payload[0] = CARDIAC_GATT_TEMP_VERSION;
+        Cardiac_GATT_WriteTempValue();
+    }
+
     /* Readable from the start */
     Cardiac_GATT_UpdateStatus();
     cardiac_gatt_last_status_tick = HAL_GetTick();
+    cardiac_gatt_rate_window_tick = HAL_GetTick();
+    cardiac_gatt_rate_window_ok_count = cardiac_gatt_notify_ok_count;
 
     cardiac_gatt_init_status = BLE_STATUS_SUCCESS;
 
@@ -775,6 +982,7 @@ void Cardiac_GATT_OnDisconnected(void)
 {
     cardiac_gatt_connected = 0U;
     cardiac_gatt_rpeak_has_pending = 0U;
+    cardiac_gatt_temp_has_pending = 0U;
     Cardiac_GATT_StreamReset(&cardiac_ecg_stream);
     Cardiac_GATT_StreamReset(&cardiac_scg_stream);
     cardiac_gatt_cccd_mask = 0U;
@@ -797,8 +1005,11 @@ void Cardiac_GATT_Process(void)
     }
 
     Cardiac_GATT_ProcessRPeaks();
+    Cardiac_GATT_ProcessTemperature();
     Cardiac_GATT_StreamProcess(&cardiac_ecg_stream);
     Cardiac_GATT_StreamProcess(&cardiac_scg_stream);
+
+    Cardiac_GATT_UpdateNotifyRate();
 }
 
 
@@ -835,6 +1046,11 @@ void aci_gatt_srv_attribute_modified_event(uint16_t Connection_Handle,
     else if (Attr_Handle == (uint16_t)(cardiac_gatt_status_char_handle + 2U))
     {
         bit = CARDIAC_GATT_CCCD_STATUS;
+    }
+    else if ((cardiac_gatt_temp_init_status == BLE_STATUS_SUCCESS) &&
+             (Attr_Handle == (uint16_t)(cardiac_gatt_temp_char_handle + 2U)))
+    {
+        bit = CARDIAC_GATT_CCCD_TEMP;
     }
 
     if (bit == 0U)

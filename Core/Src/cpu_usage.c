@@ -64,6 +64,8 @@ static const CPU_Usage_IsrName cpu_usage_isr_names[] =
   { (int32_t)TIM2_IRQn,            "TIM2" },
   { (int32_t)TIM6_IRQn,            "TIM6 (HAL tick)" },
   { (int32_t)USART2_IRQn,          "USART2 (BLE HCI)" },
+  { (int32_t)I2C1_EV_IRQn,         "I2C1_EV (MAX30205)" },
+  { (int32_t)I2C1_ER_IRQn,         "I2C1_ER (MAX30205)" },
   { (int32_t)OTG_HS_IRQn,          "OTG_HS (USB)" },
 };
 

@@ -61,6 +61,7 @@ extern DMA_NodeTypeDef Node_GPDMA1_Channel0;
 extern DMA_QListTypeDef List_GPDMA1_Channel0;
 extern DMA_HandleTypeDef handle_GPDMA1_Channel0;
 extern UART_HandleTypeDef huart2;
+extern I2C_HandleTypeDef hi2c1;
 extern TIM_HandleTypeDef htim2;
 extern PCD_HandleTypeDef hpcd_USB_OTG_HS;
 extern TIM_HandleTypeDef htim6;
@@ -240,6 +241,34 @@ void TIM6_IRQHandler(void)
 
   CPU_USAGE_ISR_EXIT();
   /* USER CODE END TIM6_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C1 Event interrupt.
+  */
+void I2C1_EV_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C1_EV_IRQn 0 */
+  CPU_USAGE_ISR_ENTER();
+  /* USER CODE END I2C1_EV_IRQn 0 */
+  HAL_I2C_EV_IRQHandler(&hi2c1);
+  /* USER CODE BEGIN I2C1_EV_IRQn 1 */
+  CPU_USAGE_ISR_EXIT();
+  /* USER CODE END I2C1_EV_IRQn 1 */
+}
+
+/**
+  * @brief This function handles I2C1 Error interrupt.
+  */
+void I2C1_ER_IRQHandler(void)
+{
+  /* USER CODE BEGIN I2C1_ER_IRQn 0 */
+  CPU_USAGE_ISR_ENTER();
+  /* USER CODE END I2C1_ER_IRQn 0 */
+  HAL_I2C_ER_IRQHandler(&hi2c1);
+  /* USER CODE BEGIN I2C1_ER_IRQn 1 */
+  CPU_USAGE_ISR_EXIT();
+  /* USER CODE END I2C1_ER_IRQn 1 */
 }
 
 /**

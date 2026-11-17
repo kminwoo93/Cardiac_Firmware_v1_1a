@@ -8,6 +8,7 @@
  *   SCG Raw    : 3c010003-...  Notify
  *   R-peak     : 3c010004-...  Notify
  *   Status     : 3c010005-...  Read, Notify (once per second)
+ *   Temperature: 3c010006-...  Read, Notify (every 5 s, MAX30205)
  */
 
 #ifndef INC_CARDIAC_GATT_H_
@@ -24,10 +25,15 @@ extern "C" {
 #define CARDIAC_GATT_CCCD_SCG       0x02U
 #define CARDIAC_GATT_CCCD_RPEAK     0x04U
 #define CARDIAC_GATT_CCCD_STATUS    0x08U
+#define CARDIAC_GATT_CCCD_TEMP      0x10U
 
 /* Status characteristic payload size (fits the default 23-byte ATT MTU) */
 #define CARDIAC_GATT_STATUS_SIZE    20U
 #define CARDIAC_GATT_STATUS_VERSION 1U
+
+/* Temperature characteristic payload size (fits the default 23-byte ATT MTU) */
+#define CARDIAC_GATT_TEMP_SIZE      10U
+#define CARDIAC_GATT_TEMP_VERSION   1U
 
 /* Debug variables */
 extern volatile uint8_t  cardiac_gatt_init_status;
@@ -47,6 +53,21 @@ extern volatile uint32_t cardiac_gatt_scg_packet_count;
 extern volatile uint32_t cardiac_gatt_scg_sample_count;
 extern volatile uint32_t cardiac_gatt_scg_error_count;
 extern volatile uint32_t cardiac_gatt_scg_gap_count;
+extern volatile uint32_t cardiac_gatt_temp_sent_count;
+extern volatile uint32_t cardiac_gatt_temp_error_count;
+
+/*
+ * Notification rate over the last 1 s window, to size the link budget
+ * (docs/BLE_LINK.md). per_event = notifications per connection event x 100,
+ * from the measured rate and the current connection interval.
+ * tx_full = notifications refused because the WB05N TX buffers were full:
+ * when it increases, the link is saturated and the rate is its capacity.
+ */
+extern volatile uint32_t cardiac_gatt_notify_per_s;
+extern volatile uint32_t cardiac_gatt_notify_per_s_peak;
+extern volatile uint32_t cardiac_gatt_notify_per_event_x100;
+extern volatile uint32_t cardiac_gatt_notify_per_event_peak_x100;
+extern volatile uint32_t cardiac_gatt_notify_tx_full_count;
 
 /* Register the Cardiac service and its characteristics.
  * Call after aci_gatt_srv_profile_init() and aci_gap_profile_init().
@@ -57,7 +78,7 @@ uint8_t Cardiac_GATT_Init(void);
 void Cardiac_GATT_OnConnected(uint16_t connection_handle);
 void Cardiac_GATT_OnDisconnected(void);
 
-/* Periodic work (Status update, R-peak, ECG and SCG notifications).
+/* Periodic work (Status, R-peak, ECG, SCG and Temperature notifications).
  * Called from the BLE thread.
  */
 void Cardiac_GATT_Process(void);
