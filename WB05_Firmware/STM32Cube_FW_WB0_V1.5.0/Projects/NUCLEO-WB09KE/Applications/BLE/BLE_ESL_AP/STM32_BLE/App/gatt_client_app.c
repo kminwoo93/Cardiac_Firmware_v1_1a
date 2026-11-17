@@ -1,0 +1,1711 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    gatt_client_app.c
+  * @author  MCD Application Team
+  * @brief   GATT Client Application
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2024 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+
+#include "main.h"
+#include "app_common.h"
+#include "ble.h"
+#include "gatt_client_app.h"
+#include "stm32_seq.h"
+#include "app_ble.h"
+#include "ble_evt.h"
+#include "otp_client.h"
+#include "nvm_db.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "esl_profile_ap.h"
+#include "time_ref.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+
+/* USER CODE BEGIN PTD */
+#define ECP_TIMEOUT_MS         (30 * 1000)  // 30 seconds
+/* USER CODE END PTD */
+
+typedef enum
+{
+  NOTIFICATION_INFO_RECEIVED_EVT,
+  /* USER CODE BEGIN GATT_CLIENT_APP_Opcode_t */
+  ESL_NOTIFICATION_INFO_RECEIVED_EVT
+  /* USER CODE END GATT_CLIENT_APP_Opcode_t */
+}GATT_CLIENT_APP_Opcode_t;
+
+typedef struct
+{
+  uint8_t *p_Payload;
+  uint8_t length;
+}GATT_CLIENT_APP_Data_t;
+
+typedef struct
+{
+  GATT_CLIENT_APP_Opcode_t Client_Evt_Opcode;
+  GATT_CLIENT_APP_Data_t   DataTransfered;
+}GATT_CLIENT_APP_Notification_evt_t;
+
+typedef struct
+{
+  GATT_CLIENT_APP_State_t state;
+
+  uint16_t connHdl;
+
+  uint16_t ALLServiceStartHdl;
+  uint16_t ALLServiceEndHdl;
+
+  uint16_t GAPServiceStartHdl;
+  uint16_t GAPServiceEndHdl;
+
+  uint16_t GATTServiceStartHdl;
+  uint16_t GATTServiceEndHdl;
+
+  uint16_t ServiceChangedCharHdl;
+  uint16_t ServiceChangedCharValueHdl;
+  uint16_t ServiceChangedCharDescHdl;
+
+  /* USER CODE BEGIN BleClientAppContext_t */
+  /* Handles of ESL service */
+  uint16_t ESLServiceHdl;
+  uint16_t ESLServiceEndHdl;
+
+  /* handles of the Tx characteristic - Write To Server */
+  /* Handles of ESL Address characteristic */
+  uint16_t ESLAddressCharHdl;
+  uint16_t ESLAddressValueHdl;
+  
+  /* Handles of AP Sync Material characteristic */
+  uint16_t APSyncKeyMaterialCharHdl;
+  uint16_t APSyncKeyMaterialValueHdl;
+  
+  /* Handles of ESL Resp Key Material characteristic */
+  uint16_t ESLRespKeyMaterialCharHdl;
+  uint16_t ESLRespKeyMaterialValueHdl;
+  
+  /* Handles of ESL Current Absolute Time characteristic */
+  uint16_t ESLCurrAbsTimeCharHdl;
+  uint16_t ESLCurrAbsTimeValueHdl;
+  
+  /* handles of the Rx characteristic - Notification From Server */  
+  /* Handles of ESL Control Point characteristic */
+  uint16_t ESLControlPointCharHdl;
+  uint16_t ESLControlPointValueHdl;
+  uint16_t ESLControlPointCCCDHdl;
+    
+  /* Handles of ESL Display Information characteristic */
+  uint16_t ESLDisplayInfoCharHdl;
+  uint16_t ESLDisplayInfoValueHdl;
+  
+  /* Handles of ESL Image Information characteristic */
+  uint16_t ESLImageInfoCharHdl;
+  uint16_t ESLImageInfoValueHdl;
+
+  /* Handles of ESL LED Information characteristic */
+  uint16_t ESLSensorInfoCharHdl;
+  uint16_t ESLSensorInfoValueHdl;
+  
+  /* Handles of ESL LED Information characteristic */
+  uint16_t ESLLedInfoCharHdl;
+  uint16_t ESLLedInfoValueHdl;
+  
+  OTSHandleContext_t OTSHandles;
+  
+  uint16_t DISPNPIdCharHdl;
+  uint16_t DISPNPIdValueHdl;
+  
+  uint8_t gatt_error_code;
+  
+  /* ESL Control Point (ECP) timeout timerID*/
+  VTIMER_HandleType ECP_timer_Id;    
+  
+  uint16_t att_mtu;
+  uint16_t read_char_len;
+  uint8_t read_char[512];
+  uint16_t read_char_offset;
+  bool b_ECP_failed; 
+/* USER CODE END BleClientAppContext_t */
+
+}BleClientAppContext_t;
+
+typedef enum
+{
+  PROC_GATT_DISC_ALL_PRIMARY_SERVICES,
+  PROC_GATT_DISC_ALL_CHARS,
+  PROC_GATT_DISC_ALL_DESCS,
+  PROC_GATT_ENABLE_ALL_NOTIFICATIONS,
+  /* USER CODE BEGIN ProcGattId_t*/
+
+  /* USER CODE END ProcGattId_t */
+}ProcGattId_t;
+
+/* Private defines ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macros -------------------------------------------------------------*/
+#define UNPACK_2_BYTE_PARAMETER(ptr)  \
+        (uint16_t)((uint16_t)(*((uint8_t *)ptr))) |   \
+        (uint16_t)((((uint16_t)(*((uint8_t *)ptr + 1))) << 8))
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+
+static BleClientAppContext_t a_ClientContext[CFG_BLE_NUM_CLIENT_CONTEXTS];
+
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Global variables ----------------------------------------------------------*/
+
+/* USER CODE BEGIN GV */
+extern ESL_AP_context_t ESL_AP_Context;
+/* USER CODE END GV */
+
+/* Private function prototypes -----------------------------------------------*/
+
+static BLEEVT_EvtAckStatus_t EventHandler(aci_blecore_event *p_evt);
+static void gatt_parse_services(aci_att_clt_read_by_group_type_resp_event_rp0 *p_evt);
+static void gatt_parse_services_by_UUID(aci_att_clt_find_by_type_value_resp_event_rp0 *p_evt);
+static void gatt_parse_chars(aci_att_clt_read_by_type_resp_event_rp0 *p_evt);
+static void gatt_parse_descs(aci_att_clt_find_info_resp_event_rp0 *p_evt);
+static void gatt_parse_notification(aci_gatt_clt_notification_event_rp0 *p_evt);
+static void gatt_Notification(GATT_CLIENT_APP_Notification_evt_t *p_Notif);
+static void client_discover_all(void);
+static void gatt_cmd_resp_release(void);
+static void gatt_cmd_resp_wait(void);
+static uint8_t gatt_procedure(uint8_t index, ProcGattId_t GattProcId);
+/* USER CODE BEGIN PFP */
+static void context_init(uint8_t index);
+static void ECPTimeout(void *arg);
+static void print_Info_Char(void);
+static uint8_t ReadLongChar(uint16_t ValueHdl, uint16_t Offset);
+static void set_ECP_Failed(bool bValue);
+static uint8_t ReadInfoChar(uint16_t ValueHdl);
+/* USER CODE END PFP */
+
+/* Functions Definition ------------------------------------------------------*/
+/**
+ * @brief  Service initialization
+ * @param  None
+ * @retval None
+ */
+void GATT_CLIENT_APP_Init(void)
+{
+  int ret;
+
+  /* USER CODE BEGIN GATT_CLIENT_APP_Init_1 */
+
+  /* USER CODE END GATT_CLIENT_APP_Init_1 */
+
+  for(uint8_t index = 0; index < CFG_BLE_NUM_CLIENT_CONTEXTS; index++)
+  {
+    a_ClientContext[index].connHdl = 0xFFFF;
+    a_ClientContext[index].state = GATT_CLIENT_APP_DISCONNECTED;
+  }
+
+  /**
+   *  Register the event handler to the BLE controller
+   */
+  ret = BLEEVT_RegisterGattEvtHandler(EventHandler);
+  if (ret != 0)
+  {
+    Error_Handler();
+  }
+  /* Register a task allowing to discover all services and characteristics and enable all notifications */
+  UTIL_SEQ_RegTask(1U << CFG_TASK_DISCOVER_SERVICES_ID, UTIL_SEQ_RFU, client_discover_all);
+  
+  context_init(0);
+  
+  TIMEREF_SetAbsoluteTime(0);
+  
+  OTP_CLIENT_Init();
+  
+  /* USER CODE END GATT_CLIENT_APP_Init_2 */
+  return;
+}
+
+static void context_init(uint8_t index)
+{                                   
+  memset(&a_ClientContext[index], 0, sizeof(BleClientAppContext_t));
+  a_ClientContext[index].state = GATT_CLIENT_APP_DISCONNECTED;
+  a_ClientContext[index].connHdl = 0xFFFF;
+  
+  /* When the AP writes to the ECP, the AP shall start a timer with the value 
+     set to the ESL Control Point Timeout period (30 seconds). If the timer 
+     expires, then the ECP procedure shall be considered to have failed. */
+  a_ClientContext[index].ECP_timer_Id.callback = ECPTimeout;
+}
+
+void GATT_CLIENT_APP_Notification(GATT_CLIENT_APP_ConnHandle_Notif_evt_t *p_Notif)
+{
+  /* USER CODE BEGIN GATT_CLIENT_APP_Notification_1 */
+
+  /* USER CODE END GATT_CLIENT_APP_Notification_1 */
+  switch(p_Notif->ConnOpcode)
+  {
+    /* USER CODE BEGIN ConnOpcode */
+
+    /* USER CODE END ConnOpcode */
+
+    case PEER_CONN_HANDLE_EVT :
+      {
+        uint8_t index;
+
+        for(index = 0; index < CFG_BLE_NUM_CLIENT_CONTEXTS; index++)
+        {
+          if(a_ClientContext[index].state == GATT_CLIENT_APP_DISCONNECTED)
+          {
+            a_ClientContext[index].connHdl = p_Notif->ConnHdl;
+            a_ClientContext[index].state = GATT_CLIENT_APP_CONNECTED;
+            /* USER CODE BEGIN PEER_CONN_HANDLE_EVT_1 */
+            context_init(index);
+      
+            set_ECP_Failed(false);
+      
+            a_ClientContext[index].state = GATT_CLIENT_APP_CONNECTED;
+            a_ClientContext[index].connHdl = p_Notif->ConnHdl;      
+            a_ClientContext[index].att_mtu = 23;
+            OTP_CLIENT_ConnectionComplete(&a_ClientContext[index].OTSHandles, a_ClientContext[index].connHdl);
+            /* USER CODE END PEER_CONN_HANDLE_EVT_1 */
+
+            break;
+          }
+        }
+        if(index == CFG_BLE_NUM_CLIENT_CONTEXTS)
+        {
+          APP_DBG_MSG("Error: reached maximum number of connected servers!\n");
+          aci_gap_terminate(p_Notif->ConnHdl, BLE_ERROR_TERMINATED_REMOTE_USER);
+        }
+
+        /* USER CODE BEGIN PEER_CONN_HANDLE_EVT */
+        
+        /* USER CODE END PEER_CONN_HANDLE_EVT */
+      }
+      break;
+
+    case PEER_DISCON_HANDLE_EVT :
+      {
+        for(uint8_t index = 0; index < CFG_BLE_NUM_CLIENT_CONTEXTS; index++)
+        {
+          if(a_ClientContext[index].connHdl == p_Notif->ConnHdl)
+          {
+            /* Set all handles to 0. */
+            memset(&a_ClientContext[index], 0, sizeof(BleClientAppContext_t));
+            a_ClientContext[index].connHdl = 0xFFFF;
+            a_ClientContext[index].state = GATT_CLIENT_APP_DISCONNECTED;
+
+            /* USER CODE BEGIN PEER_DISCON_HANDLE_EVT_1 */
+            HAL_RADIO_TIMER_StopVirtualTimer(&a_ClientContext[index].ECP_timer_Id);
+            /* USER CODE END PEER_DISCON_HANDLE_EVT_1 */
+
+            break;
+          }
+        }
+        /* USER CODE BEGIN PEER_DISCON_HANDLE_EVT */
+        
+        /* USER CODE END PEER_DISCON_HANDLE_EVT */
+      }
+      break;
+
+    default:
+      /* USER CODE BEGIN ConnOpcode_Default */
+
+      /* USER CODE END ConnOpcode_Default */
+      break;
+  }
+  /* USER CODE BEGIN GATT_CLIENT_APP_Notification_2 */
+
+  /* USER CODE END GATT_CLIENT_APP_Notification_2 */
+  return;
+}
+
+void GATT_CLIENT_APP_DiscoverServices(uint16_t connection_handle)
+{
+  for(uint8_t index = 0; index < CFG_BLE_NUM_CLIENT_CONTEXTS; index++)
+  {
+    if(a_ClientContext[index].connHdl == connection_handle)
+    {
+      a_ClientContext[index].state = GATT_CLIENT_APP_DISCOVER_SERVICES;
+
+      /* USER CODE BEGIN GATT_CLIENT_APP_Discover_services */
+
+      /* USER CODE END GATT_CLIENT_APP_Discover_services */
+
+      UTIL_SEQ_SetTask( 1U << CFG_TASK_DISCOVER_SERVICES_ID, CFG_SEQ_PRIO_0);
+
+      break;
+    }
+  }
+
+  return;
+}
+
+uint8_t gatt_procedure(uint8_t index, ProcGattId_t GattProcId)
+{
+  tBleStatus result = BLE_STATUS_SUCCESS;
+  uint8_t status;
+
+  if (index >= CFG_BLE_NUM_CLIENT_CONTEXTS)
+  {
+    status = 1;
+  }
+  else
+  {
+    status = 0;
+    switch (GattProcId)
+    {
+      case PROC_GATT_DISC_ALL_PRIMARY_SERVICES:
+      {
+        APP_DBG_MSG("GATT services discovery\n");
+        result = aci_gatt_clt_disc_all_primary_services(a_ClientContext[index].connHdl, BLE_GATT_UNENHANCED_ATT_L2CAP_CID);
+
+        if (result == BLE_STATUS_SUCCESS)
+        {
+          gatt_cmd_resp_wait();
+          APP_DBG_MSG("PROC_GATT_CTL_DISC_ALL_PRIMARY_SERVICES services discovered Successfully\n\n");
+        }
+        else
+        {
+          APP_DBG_MSG("PROC_GATT_CTL_DISC_ALL_PRIMARY_SERVICES aci_gatt_clt_disc_all_primary_services cmd NOK status =0x%02X\n\n", result);
+        }
+      }
+
+      break; /* PROC_GATT_DISC_ALL_PRIMARY_SERVICES */
+
+      case PROC_GATT_DISC_ALL_CHARS:
+      {
+        APP_DBG_MSG("DISCOVER_ALL_CHARS ConnHdl=0x%04X ALLServiceHandle[0x%04X - 0x%04X]\n",
+                          a_ClientContext[index].connHdl,
+                          0x0001,
+                          0xFFFF);
+        result = aci_gatt_clt_disc_all_char_of_service(
+                           a_ClientContext[index].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           0x0001,
+                           0xFFFF);
+        if (result == BLE_STATUS_SUCCESS)
+        {
+          gatt_cmd_resp_wait();
+          APP_DBG_MSG("All characteristics discovered Successfully\n\n");
+        }
+        else
+        {
+          APP_DBG_MSG("All characteristics discovery Failed, status =0x%02X\n\n", result);
+        }
+      }
+      break; /* PROC_GATT_DISC_ALL_CHARS */
+
+      case PROC_GATT_DISC_ALL_DESCS:
+      {
+        APP_DBG_MSG("DISCOVER_ALL_CHAR_DESCS [0x%04X - 0x%04X]\n",
+                         0x0001,
+                         0xFFFF);
+        result = aci_gatt_clt_disc_all_char_desc(
+                           a_ClientContext[index].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           0x0001,
+                           0xFFFF);
+        if (result == BLE_STATUS_SUCCESS)
+        {
+          gatt_cmd_resp_wait();
+          APP_DBG_MSG("All characteristic descriptors discovered Successfully\n\n");
+        }
+        else
+        {
+          APP_DBG_MSG("All characteristic descriptors discovery Failed, status =0x%02X\n\n", result);
+        }
+      }
+      break; /* PROC_GATT_DISC_ALL_DESCS */
+      case PROC_GATT_ENABLE_ALL_NOTIFICATIONS:
+      {
+        uint16_t enable; /* Buffer must be kept valid for aci_gatt_clt_write until a gatt procedure complete is received. */
+
+        if (a_ClientContext[index].ServiceChangedCharDescHdl != 0x0000)
+        {
+          enable = 0x0002;
+          result = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                                      BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                                      a_ClientContext[index].ServiceChangedCharDescHdl,
+                                      2,
+                                      (uint8_t *) &enable);
+          gatt_cmd_resp_wait();
+          APP_DBG_MSG(" ServiceChangedCharDescHdl =0x%04X\n",a_ClientContext[index].ServiceChangedCharDescHdl);
+        }
+        /* USER CODE BEGIN PROC_GATT_ENABLE_ALL_NOTIFICATIONS */
+        if(a_ClientContext[index].ESLControlPointCCCDHdl != 0x0000)
+        {
+          enable = 0x0001;
+          APP_DBG_MSG("Enable notifications on ECP (handle 0x%04X)\n", a_ClientContext[index].ESLControlPointCCCDHdl);
+          result = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                                      BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                                      a_ClientContext[index].ESLControlPointCCCDHdl,
+                                      2,
+                                      (uint8_t *) &enable);
+          gatt_cmd_resp_wait();
+        }
+        if(a_ClientContext[index].OTSHandles.ObjActionCPCCCDHdl != 0x0000)
+        {
+          enable = 0x0002;
+          APP_DBG_MSG("Enable indications on OACP (handle 0x%04X)\n", a_ClientContext[index].OTSHandles.ObjActionCPCCCDHdl);
+          result = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                                      BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                                      a_ClientContext[index].OTSHandles.ObjActionCPCCCDHdl,
+                                      2,
+                                      (uint8_t *) &enable);
+          gatt_cmd_resp_wait();
+        }
+        if(a_ClientContext[index].OTSHandles.ObjListCPCCCDHdl != 0x0000)
+        {
+          enable = 0x0002;
+          APP_DBG_MSG("Enable indications on OLCP (handle 0x%04X)\n", a_ClientContext[index].OTSHandles.ObjListCPCCCDHdl);
+          result = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                                      BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                                      a_ClientContext[index].OTSHandles.ObjListCPCCCDHdl,
+                                      2,
+                                      (uint8_t *) &enable);
+          gatt_cmd_resp_wait();
+        }
+        /* USER CODE END PROC_GATT_ENABLE_ALL_NOTIFICATIONS */
+
+        if ((result == BLE_STATUS_SUCCESS) && (a_ClientContext[0].gatt_error_code == 0))
+        {
+          APP_DBG_MSG("Notifications enabled successfully\n");
+        }
+        else
+        {
+          APP_DBG_MSG("Enabling notifications failed, status 0x%02X, gatt error code=0x%02X\n", result, a_ClientContext[0].gatt_error_code);
+        }
+        a_ClientContext[0].gatt_error_code = 0;
+      }
+      break; /* PROC_GATT_ENABLE_ALL_NOTIFICATIONS */
+    default:
+      break;
+    }
+  }
+
+  return status;
+}
+
+/* USER CODE BEGIN FD */
+
+/* USER CODE END FD */
+
+/*************************************************************
+ *
+ * LOCAL FUNCTIONS
+ *
+ *************************************************************/
+
+/**
+ * @brief  Event handler
+ * @param  Event: Address of the buffer holding the Event
+ * @retval Ack: Return whether the Event has been managed or not
+ */
+static BLEEVT_EvtAckStatus_t EventHandler(aci_blecore_event *p_evt)
+{
+  BLEEVT_EvtAckStatus_t return_value = BLEEVT_NoAck;
+  GATT_CLIENT_APP_Notification_evt_t Notification;
+  UNUSED(Notification);
+
+  return_value = BLEEVT_NoAck;
+
+  switch (p_evt->ecode)
+  {
+    case ACI_ATT_CLT_READ_BY_GROUP_TYPE_RESP_VSEVT_CODE:
+    {
+      aci_att_clt_read_by_group_type_resp_event_rp0 *p_evt_rsp = (void*)p_evt->data;
+      gatt_parse_services((aci_att_clt_read_by_group_type_resp_event_rp0 *)p_evt_rsp);
+    }
+    break; /* ACI_ATT_READ_BY_GROUP_TYPE_RESP_VSEVT_CODE */
+  case ACI_ATT_CLT_FIND_BY_TYPE_VALUE_RESP_VSEVT_CODE:
+    {
+      aci_att_clt_find_by_type_value_resp_event_rp0 *p_evt_rsp = (void*) p_evt->data;
+      gatt_parse_services_by_UUID((aci_att_clt_find_by_type_value_resp_event_rp0 *)p_evt_rsp);
+    }
+    break; /* ACI_ATT_FIND_BY_TYPE_VALUE_RESP_VSEVT_CODE */
+    case ACI_ATT_CLT_READ_BY_TYPE_RESP_VSEVT_CODE:
+    {
+      aci_att_clt_read_by_type_resp_event_rp0 *p_evt_rsp = (void*)p_evt->data;
+      gatt_parse_chars((aci_att_clt_read_by_type_resp_event_rp0 *)p_evt_rsp);
+    }
+    break; /* ACI_ATT_READ_BY_TYPE_RESP_VSEVT_CODE */
+    case ACI_ATT_CLT_FIND_INFO_RESP_VSEVT_CODE:
+    {
+      aci_att_clt_find_info_resp_event_rp0 *p_evt_rsp = (void*)p_evt->data;
+      gatt_parse_descs((aci_att_clt_find_info_resp_event_rp0 *)p_evt_rsp);
+    }
+    break; /* ACI_ATT_FIND_INFO_RESP_VSEVT_CODE */
+    case ACI_GATT_CLT_NOTIFICATION_VSEVT_CODE:
+    {
+      aci_gatt_clt_notification_event_rp0 *p_evt_rsp = (void*)p_evt->data;
+      gatt_parse_notification((aci_gatt_clt_notification_event_rp0 *)p_evt_rsp);
+    }
+    break;/* ACI_GATT_NOTIFICATION_VSEVT_CODE */
+  case ACI_GATT_CLT_INDICATION_VSEVT_CODE:
+    {
+      aci_gatt_clt_indication_event_rp0 *p_evt_rsp = (void*)p_evt->data;
+      
+      APP_DBG_MSG("ACI_GATT_CLT_INDICATION_VSEVT_CODE\n");
+      if(p_evt_rsp->Attribute_Handle == a_ClientContext[0].ServiceChangedCharValueHdl)
+      {
+        APP_DBG_MSG("Service Changed Indication\n");
+        
+        GATT_CLIENT_APP_DiscoverServices(p_evt_rsp->Connection_Handle);
+      }      
+      else if(p_evt_rsp->Attribute_Handle == a_ClientContext[0].OTSHandles.ObjListCPValueHdl)
+      {
+        return_value = BLEEVT_Ack;
+        
+        OTP_CLIENT_OLCPIndication(p_evt_rsp->Attribute_Value, p_evt_rsp->Attribute_Value_Length);
+      }
+      else if(p_evt_rsp->Attribute_Handle == a_ClientContext[0].OTSHandles.ObjActionCPValueHdl)
+      {
+        return_value = BLEEVT_Ack;
+        
+        OTP_CLIENT_OACPIndication(p_evt_rsp->Attribute_Value, p_evt_rsp->Attribute_Value_Length);
+      }
+      
+      aci_gatt_clt_confirm_indication(p_evt_rsp->Connection_Handle, p_evt_rsp->CID);
+    }
+    break;    
+    case ACI_GATT_CLT_PROC_COMPLETE_VSEVT_CODE:
+    {
+      aci_gatt_clt_proc_complete_event_rp0 *p_evt_rsp = (void*)p_evt->data;
+
+      uint8_t index = 0;
+      
+      gatt_cmd_resp_release();
+      a_ClientContext[index].gatt_error_code = p_evt_rsp->Error_Code;
+      APP_DBG_MSG("GATT procedure complete: 0x%02x\n", p_evt_rsp->Error_Code);
+    }
+    break;/* ACI_GATT_PROC_COMPLETE_VSEVT_CODE */
+    case ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE:
+    {
+      aci_gatt_tx_pool_available_event_rp0 *tx_pool_available;
+      tx_pool_available = (aci_gatt_tx_pool_available_event_rp0 *)p_evt->data;
+      UNUSED(tx_pool_available);
+      /* USER CODE BEGIN ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE */
+      UTIL_SEQ_SetEvt(1 << CFG_IDLEEVT_TX_POOL_AVAILABLE_EVENT);
+      /* USER CODE END ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE */
+    }
+    break;/* ACI_GATT_TX_POOL_AVAILABLE_VSEVT_CODE*/
+    case ACI_ATT_EXCHANGE_MTU_RESP_VSEVT_CODE:
+    {
+      aci_att_exchange_mtu_resp_event_rp0 * exchange_mtu_resp;
+      exchange_mtu_resp = (aci_att_exchange_mtu_resp_event_rp0 *)p_evt->data;
+      APP_DBG_MSG("  MTU exchanged size = %d\n",exchange_mtu_resp->MTU );
+      a_ClientContext[0].att_mtu = exchange_mtu_resp->MTU;
+      /* USER CODE BEGIN ACI_ATT_EXCHANGE_MTU_RESP_VSEVT_CODE */
+
+      /* USER CODE END ACI_ATT_EXCHANGE_MTU_RESP_VSEVT_CODE */
+    }
+    break;
+    /* USER CODE BEGIN BLECORE_EVT */
+    case ACI_GATT_CLT_ERROR_RESP_VSEVT_CODE:
+    {  
+      aci_gatt_clt_error_resp_event_rp0 * clt_error_resp;
+      clt_error_resp = (aci_gatt_clt_error_resp_event_rp0 *)p_evt->data;
+      APP_DBG_MSG("  GATT Error Response code: 0x%02x \n", clt_error_resp->Error_Code);
+      UNUSED(clt_error_resp);
+    }
+    break; 
+    
+    case ACI_ATT_CLT_READ_RESP_VSEVT_CODE:
+    {
+      aci_att_clt_read_resp_event_rp0 * clt_read_resp;
+      clt_read_resp = (aci_att_clt_read_resp_event_rp0 *)p_evt->data;
+      //APP_DBG_MSG("  GATT Read Response length: 0x%02x \n", clt_read_resp->Event_Data_Length);
+      a_ClientContext[0].read_char_len = clt_read_resp->Event_Data_Length;
+      memcpy(a_ClientContext[0].read_char, clt_read_resp->Attribute_Value, a_ClientContext[0].read_char_len);
+      a_ClientContext[0].read_char_offset = a_ClientContext[0].read_char_len;
+    }    
+    break;
+    
+    case ACI_ATT_CLT_READ_BLOB_RESP_VSEVT_CODE:
+    {
+      aci_att_clt_read_blob_resp_event_rp0 * clt_read_resp;
+      clt_read_resp = (aci_att_clt_read_blob_resp_event_rp0 *)p_evt->data;
+      APP_DBG_MSG("  GATT Read Blob Response length: 0x%02x \n", clt_read_resp->Event_Data_Length);
+      a_ClientContext[0].read_char_len += clt_read_resp->Event_Data_Length;
+      memcpy(a_ClientContext[0].read_char + a_ClientContext[0].read_char_offset, clt_read_resp->Attribute_Value, a_ClientContext[0].read_char_len);
+      a_ClientContext[0].read_char_offset = a_ClientContext[0].read_char_len;
+    }
+    break;
+    /* USER CODE END BLECORE_EVT */
+    default:
+      break;
+  }/* end switch (p_evt->ecode) */
+
+  return(return_value);
+}
+
+__USED static void gatt_Notification(GATT_CLIENT_APP_Notification_evt_t *p_Notif)
+{
+  /* USER CODE BEGIN gatt_Notification_1*/
+
+  /* USER CODE END gatt_Notification_1 */
+  switch (p_Notif->Client_Evt_Opcode)
+  {
+    /* USER CODE BEGIN Client_Evt_Opcode */
+    case ESL_NOTIFICATION_INFO_RECEIVED_EVT:
+      {
+        //ECP notify: response of ESL to AT command sent writing the ECP
+        ESL_AP_ECPNotificationReceived(p_Notif->DataTransfered.p_Payload); 
+      }
+      break;
+    /* USER CODE END Client_Evt_Opcode */
+
+    case NOTIFICATION_INFO_RECEIVED_EVT:
+      /* USER CODE BEGIN NOTIFICATION_INFO_RECEIVED_EVT */
+
+      /* USER CODE END NOTIFICATION_INFO_RECEIVED_EVT */
+      break;
+
+    default:
+      /* USER CODE BEGIN Client_Evt_Opcode_Default */
+
+      /* USER CODE END Client_Evt_Opcode_Default */
+      break;
+  }
+  /* USER CODE BEGIN gatt_Notification_2*/
+
+  /* USER CODE END gatt_Notification_2 */
+  return;
+}
+
+/**
+* function of GATT service parse
+*/
+static void gatt_parse_services(aci_att_clt_read_by_group_type_resp_event_rp0 *p_evt)
+{
+  uint16_t uuid, ServiceStartHdl, ServiceEndHdl;
+  uint8_t uuid_offset, uuid_size, uuid_short_offset;
+  uint8_t i, idx, numServ, index;
+
+//  APP_DBG_MSG("ACI_ATT_READ_BY_GROUP_TYPE_RESP_VSEVT_CODE - ConnHdl=0x%04X\n",
+//                p_evt->Connection_Handle);
+
+  for (index = 0 ; index < CFG_BLE_NUM_CLIENT_CONTEXTS ; index++)
+  {
+    if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+    {
+      break;
+    }
+  }
+
+  /* check connection handle related to response before processing */
+  if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+  {
+    /* Number of attribute value tuples */
+    numServ = (p_evt->Data_Length) / p_evt->Attribute_Data_Length;
+
+    /* event data in Attribute_Data_List contains:
+    * 2 bytes for start handle
+    * 2 bytes for end handle
+    * 2 or 16 bytes data for UUID
+    */
+    if (p_evt->Attribute_Data_Length == 20) /* we are interested in the UUID is 128 bit.*/
+    {
+      idx = 16;                /*UUID index of 2 bytes read part in Attribute_Data_List */
+      uuid_offset = 4;         /*UUID offset in bytes in Attribute_Data_List */
+      uuid_size = 16;          /*UUID size in bytes */
+      uuid_short_offset = 12;  /*UUID offset of 2 bytes read part in UUID field*/
+    }
+    if (p_evt->Attribute_Data_Length == 6) /* we are interested in the UUID is 16 bit.*/
+    {
+      idx = 4;
+      uuid_offset = 4;
+      uuid_size = 2;
+      uuid_short_offset = 0;
+    }
+    UNUSED(idx);
+    UNUSED(uuid_size);
+
+    /* Loop on number of attribute value tuples */
+    for (i = 0; i < numServ; i++)
+    {
+      ServiceStartHdl =  UNPACK_2_BYTE_PARAMETER(&p_evt->Attribute_Data_List[uuid_offset - 4]);
+      ServiceEndHdl = UNPACK_2_BYTE_PARAMETER(&p_evt->Attribute_Data_List[uuid_offset - 2]);
+      uuid = UNPACK_2_BYTE_PARAMETER(&p_evt->Attribute_Data_List[uuid_offset + uuid_short_offset]);
+      APP_DBG_MSG("  %d/%d short UUID=0x%04X, handle [0x%04X - 0x%04X]",
+                   i + 1, numServ, uuid, ServiceStartHdl,ServiceEndHdl);
+
+      /* complete context fields */
+      if ( (a_ClientContext[index].ALLServiceStartHdl == 0x0000) || (ServiceStartHdl < a_ClientContext[index].ALLServiceStartHdl) )
+      {
+        a_ClientContext[index].ALLServiceStartHdl = ServiceStartHdl;
+      }
+      if ( (a_ClientContext[index].ALLServiceEndHdl == 0x0000) || (ServiceEndHdl > a_ClientContext[index].ALLServiceEndHdl) )
+      {
+        a_ClientContext[index].ALLServiceEndHdl = ServiceEndHdl;
+      }
+
+      if (uuid == GAP_SERVICE_UUID)
+      {
+        a_ClientContext[index].GAPServiceStartHdl = ServiceStartHdl;
+        a_ClientContext[index].GAPServiceEndHdl = ServiceEndHdl;
+
+        APP_DBG_MSG(", GAP_SERVICE_UUID found\n");
+      }
+      else if (uuid == GATT_SERVICE_UUID)
+      {
+        a_ClientContext[index].GATTServiceStartHdl = ServiceStartHdl;
+        a_ClientContext[index].GATTServiceEndHdl = ServiceEndHdl;
+
+        APP_DBG_MSG(", GENERIC_ATTRIBUTE_SERVICE_UUID found\n");
+      }
+/* USER CODE BEGIN gatt_parse_services_1 */
+      else if (uuid == ESL_SERVICE_UUID)
+      {
+        a_ClientContext[index].ESLServiceHdl = ServiceStartHdl;
+        a_ClientContext[index].ESLServiceEndHdl = ServiceEndHdl;
+
+        APP_DBG_MSG(", ESL_SERVICE_UUID found\n");
+      }
+      else if (uuid == DEVICE_INFORMATION_SERVICE_UUID)
+      {
+        APP_DBG_MSG(", Device Information Service found\n");
+      }
+/* USER CODE END gatt_parse_services_1 */
+      else
+      {
+        APP_DBG_MSG("\n");
+      }
+
+      uuid_offset += p_evt->Attribute_Data_Length;
+    }
+  }
+  else
+  {
+    APP_DBG_MSG("ACI_ATT_READ_BY_GROUP_TYPE_RESP_VSEVT_CODE, failed no free index in connection table !\n");
+  }
+
+  return;
+}
+
+/**
+* function of GATT service parse by UUID
+*/
+static void gatt_parse_services_by_UUID(aci_att_clt_find_by_type_value_resp_event_rp0 *p_evt)
+{
+  uint8_t i;
+
+  APP_DBG_MSG("ACI_ATT_FIND_BY_TYPE_VALUE_RESP_VSEVT_CODE - ConnHdl=0x%04X, Num_of_Handle_Pair=%d\n",
+                p_evt->Connection_Handle,
+                p_evt->Num_of_Handle_Pair);
+
+  for(i = 0 ; i < p_evt->Num_of_Handle_Pair ; i++)
+  {
+    APP_DBG_MSG("ACI_ATT_FIND_BY_TYPE_VALUE_RESP_VSEVT_CODE - PaitId=%d Found_Attribute_Handle=0x%04X, Group_End_Handle=0x%04X\n",
+                  i,
+                  p_evt->Attribute_Group_Handle_Pair[i].Found_Attribute_Handle,
+                  p_evt->Attribute_Group_Handle_Pair[i].Group_End_Handle);
+  }
+
+/* USER CODE BEGIN gatt_parse_services_by_UUID_1 */
+
+/* USER CODE END gatt_parse_services_by_UUID_1 */
+
+  return;
+}
+
+/**
+* function of GATT characteristics parse
+*/
+static void gatt_parse_chars(aci_att_clt_read_by_type_resp_event_rp0 *p_evt)
+{
+  uint16_t uuid, CharStartHdl, CharValueHdl;
+  uint8_t uuid_offset, uuid_size, uuid_short_offset;
+  uint8_t i, idx, numHdlValuePair, index;
+  uint8_t CharProperties;
+
+//  APP_DBG_MSG("ACI_ATT_READ_BY_TYPE_RESP_VSEVT_CODE - ConnHdl=0x%04X\n",
+//                p_evt->Connection_Handle);
+
+  for (index = 0 ; index < CFG_BLE_NUM_CLIENT_CONTEXTS ; index++)
+  {
+    if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+    {
+      break;
+    }
+  }
+
+  if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+  {
+    /* event data in Attribute_Data_List contains:
+    * 2 bytes for start handle
+    * 1 byte char properties
+    * 2 bytes handle
+    * 2 or 16 bytes data for UUID
+    */
+
+    /* Number of attribute value tuples */
+    numHdlValuePair = p_evt->Data_Length / p_evt->Handle_Value_Pair_Length;
+
+    if (p_evt->Handle_Value_Pair_Length == 21) /* we are interested in  128 bit UUIDs */
+    {
+      idx = 17;                /* UUID index of 2 bytes read part in Attribute_Data_List */
+      uuid_offset = 5;         /* UUID offset in bytes in Attribute_Data_List */
+      uuid_size = 16;          /* UUID size in bytes */
+      uuid_short_offset = 12;  /* UUID offset of 2 bytes read part in UUID field */
+    }
+    if (p_evt->Handle_Value_Pair_Length == 7) /* we are interested in  16 bit UUIDs */
+    {
+      idx = 5;
+      uuid_offset = 5;
+      uuid_size = 2;
+      uuid_short_offset = 0;
+    }
+    UNUSED(idx);
+    UNUSED(uuid_size);
+
+    p_evt->Data_Length -= 1;
+
+    //APP_DBG_MSG("  ConnHdl=0x%04X, number of value pair = %d\n", a_ClientContext[index].connHdl, numHdlValuePair);
+    /* Loop on number of attribute value tuples */
+    for (i = 0; i < numHdlValuePair; i++)
+    {
+      CharStartHdl = UNPACK_2_BYTE_PARAMETER(&p_evt->Handle_Value_Pair_Data[uuid_offset - 5]);
+      CharProperties = p_evt->Handle_Value_Pair_Data[uuid_offset - 3];
+      CharValueHdl = UNPACK_2_BYTE_PARAMETER(&p_evt->Handle_Value_Pair_Data[uuid_offset - 2]);
+      uuid = UNPACK_2_BYTE_PARAMETER(&p_evt->Handle_Value_Pair_Data[uuid_offset + uuid_short_offset]);
+
+      if ( (uuid != 0x0) && (CharProperties != 0x0) && (CharStartHdl != 0x0) && (CharValueHdl != 0) )
+      {
+        APP_DBG_MSG("    %d/%d short UUID=0x%04X, Properties=0x%04X, CharHandle [0x%04X - 0x%04X]",
+                     i + 1, numHdlValuePair, uuid, CharProperties, CharStartHdl, CharValueHdl);
+
+        if (uuid == DEVICE_NAME_UUID)
+        {
+          APP_DBG_MSG(", GAP DEVICE_NAME charac found\n");
+        }
+        else if (uuid == APPEARANCE_UUID)
+        {
+          APP_DBG_MSG(", GAP APPEARANCE charac found\n");
+        }
+        else if (uuid == SERVICE_CHANGED_UUID)
+        {
+          a_ClientContext[index].ServiceChangedCharHdl = CharStartHdl;
+          a_ClientContext[index].ServiceChangedCharValueHdl = CharValueHdl;
+          APP_DBG_MSG(", GATT SERVICE_CHANGED_CHARACTERISTIC_UUID charac found\n");
+        }
+/* USER CODE BEGIN gatt_parse_chars_1 */
+#ifndef PTS_OTP
+        else if (uuid == ESL_CONTROL_POINT_UUID)
+        {
+          a_ClientContext[index].ESLControlPointCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLControlPointValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_CONTROL_POINT_UUID charac found\n");
+        }
+        else if (uuid == ESL_ADDRESS_UUID)
+        {
+          a_ClientContext[index].ESLAddressCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLAddressValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_ADDRESS_UUID charac found\n");
+        }
+        else if (uuid == AP_SYNC_KEY_MATERIAL_UUID)
+        {
+          a_ClientContext[index].APSyncKeyMaterialCharHdl = CharStartHdl;
+          a_ClientContext[index].APSyncKeyMaterialValueHdl = CharValueHdl;
+          APP_DBG_MSG(", AP_SYNC_KEY_MATERIAL_UUID charac found\n");
+        }       
+        else if (uuid == ESL_RESP_KEY_MATERIAL_UUID)
+        {
+          a_ClientContext[index].ESLRespKeyMaterialCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLRespKeyMaterialValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_RESP_KEY_MATERIAL_UUID charac found\n");
+        }
+        else if (uuid == ESL_CURR_ABS_TIME_UUID)
+        {
+          a_ClientContext[index].ESLCurrAbsTimeCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLCurrAbsTimeValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_CURR_ABS_TIME_UUID charac found\n");
+        }
+        else if (uuid == ESL_DISPLAY_INFO_UUID)
+        {
+          a_ClientContext[index].ESLDisplayInfoCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLDisplayInfoValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_DISPLAY_INFO_UUID charac found\n");
+        }
+        else if (uuid == ESL_IMAGE_INFO_UUID)
+        {
+          a_ClientContext[index].ESLImageInfoCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLImageInfoValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_IMAGE_INFO_UUID charac found\n");
+        }
+        else if (uuid == ESL_SENSOR_INFO_UUID)
+        {
+          a_ClientContext[index].ESLSensorInfoCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLSensorInfoValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_SENSOR_INFO_UUID charac found\n");
+        }
+        else if (uuid == ESL_LED_INFO_UUID)
+        {
+          a_ClientContext[index].ESLLedInfoCharHdl = CharStartHdl;
+          a_ClientContext[index].ESLLedInfoValueHdl = CharValueHdl;
+          APP_DBG_MSG(", ESL_LED_INFO_UUID charac found\n");
+        }
+#endif
+        else if (uuid == OTS_FEATURE_UUID)
+        {
+          a_ClientContext[index].OTSHandles.OTSFeatureValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OTS_FEATURE_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_NAME_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjNameValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OBJECT_NAME_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_TYPE_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjTypeValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OBJECT_TYPE_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_SIZE_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjSizeValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OBJECT_SIZE_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_LAST_MODIFIED_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjLastModifiedValueHdl = CharValueHdl;
+          a_ClientContext[index].OTSHandles.ObjLastModifiedProp = CharProperties;
+          APP_DBG_MSG(", OBJECT_LAST_MODIFIED_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_ID_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjIdValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OBJECT_ID_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_PROPERTIES_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjPropValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OBJECT_PROPERTIES_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_ACTION_CONTROL_POINT_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjActionCPValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OBJECT_ACTION_CONTROL_POINT_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_LIST_CONTROL_POINT_UUID)
+        {
+          a_ClientContext[index].OTSHandles.ObjListCPValueHdl = CharValueHdl;
+          APP_DBG_MSG(", OBJECT_LIST_CONTROL_POINT_UUID charac found\n");
+        }
+        else if (uuid == OBJECT_LIST_FILTER_POINT_UUID)
+        {
+          for(uint8_t i = 0; i < 3; i++)
+          {
+            if(a_ClientContext[index].OTSHandles.ObjListFilterValueHdl[i] == 0)
+            {
+              a_ClientContext[index].OTSHandles.ObjListFilterValueHdl[i] = CharValueHdl;
+              break;
+            }
+          }
+          APP_DBG_MSG(", OBJECT_LIST_FILTER_POINT_UUID charac found\n");
+        }
+        else if (uuid == PNPID_UUID)
+        {
+          a_ClientContext[index].DISPNPIdCharHdl = CharStartHdl;
+          a_ClientContext[index].DISPNPIdValueHdl = CharValueHdl;
+          APP_DBG_MSG(", PNPID_UUID charac found\n");
+        }
+/* USER CODE END gatt_parse_chars_1 */
+        else
+        {
+          APP_DBG_MSG("\n");
+        }
+
+      }
+      uuid_offset += p_evt->Handle_Value_Pair_Length;
+    }
+  }
+  else
+  {
+    APP_DBG_MSG("ACI_ATT_READ_BY_TYPE_RESP_VSEVT_CODE, failed handle not found in connection table !\n");
+  }
+
+  return;
+}
+/**
+* function of GATT descriptor parse
+*/
+static void gatt_parse_descs(aci_att_clt_find_info_resp_event_rp0 *p_evt)
+{
+  uint16_t uuid, handle;
+  uint8_t uuid_offset, uuid_size, uuid_short_offset;
+  uint8_t i, numDesc, handle_uuid_pair_size, index;
+  static uint16_t gattCharStartHdl = 0;
+  static uint16_t gattCharValueHdl = 0;
+
+//  APP_DBG_MSG("ACI_ATT_FIND_INFO_RESP_VSEVT_CODE - ConnHdl=0x%04X\n",
+//              p_evt->Connection_Handle);
+
+  for (index = 0 ; index < CFG_BLE_NUM_CLIENT_CONTEXTS ; index++)
+  {
+    if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+    {
+      break;
+    }
+  }
+
+  if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+  {
+    /* event data in Attribute_Data_List contains:
+    * 2 bytes handle
+    * 2 or 16 bytes data for UUID
+    */
+    if (p_evt->Format == UUID_TYPE_16)
+    {
+      uuid_size = 2;
+      uuid_offset = 2;
+      uuid_short_offset = 0;
+      handle_uuid_pair_size = 4;
+    }
+    if (p_evt->Format == UUID_TYPE_128)
+    {
+      uuid_size = 16;
+      uuid_offset = 2;
+      uuid_short_offset = 12;
+      handle_uuid_pair_size = 18;
+    }
+    UNUSED(uuid_size);
+
+    /* Number of handle uuid pairs */
+    numDesc = (p_evt->Event_Data_Length) / handle_uuid_pair_size;
+
+    for (i = 0; i < numDesc; i++)
+    {
+      handle = UNPACK_2_BYTE_PARAMETER(&p_evt->Handle_UUID_Pair[uuid_offset - 2]);
+      uuid = UNPACK_2_BYTE_PARAMETER(&p_evt->Handle_UUID_Pair[uuid_offset + uuid_short_offset]);
+
+      if (uuid == PRIMARY_SERVICE_UUID)
+      {
+        //APP_DBG_MSG("PRIMARY_SERVICE_UUID=0x%04X handle=0x%04X\n", uuid, handle);
+      }
+      else if (uuid == CHARACTERISTIC_UUID)
+      {
+        /* reset UUID & handle */
+        gattCharStartHdl = 0;
+        gattCharValueHdl = 0;
+
+        gattCharStartHdl = handle;
+        //APP_DBG_MSG("CHARACTERISTIC_UUID=0x%04X CharStartHandle=0x%04X\n", uuid, handle);
+      }
+      else if ( (uuid == CHAR_EXTENDED_PROPERTIES_DESCRIPTOR_UUID)
+             || (uuid == CLIENT_CHAR_CONFIG_DESCRIPTOR_UUID) )
+      {
+
+        APP_DBG_MSG("Descriptor UUID=0x%04X, handle=0x%04X-0x%04X-0x%04X",
+                      uuid,
+                      gattCharStartHdl,
+                      gattCharValueHdl,
+                      handle);
+        if (a_ClientContext[index].ServiceChangedCharValueHdl == gattCharValueHdl)
+        {
+          a_ClientContext[index].ServiceChangedCharDescHdl = handle;
+          APP_DBG_MSG(", Service Changed CCCD found\n");
+        }
+/* USER CODE BEGIN gatt_parse_descs_1 */
+        else if (a_ClientContext[index].ESLControlPointValueHdl == gattCharValueHdl)
+        {
+          a_ClientContext[index].ESLControlPointCCCDHdl = handle;
+          APP_DBG_MSG(", ESL Control Point CCCD found: handle=0x%04X\n", handle);
+        }
+        else if (a_ClientContext[index].OTSHandles.ObjActionCPValueHdl == gattCharValueHdl)
+        {
+          a_ClientContext[index].OTSHandles.ObjActionCPCCCDHdl = handle;
+          APP_DBG_MSG(", Object Action Control Point CCCD found: handle=0x%04X\n", handle);
+        }
+        else if (a_ClientContext[index].OTSHandles.ObjListCPValueHdl == gattCharValueHdl)
+        {
+          a_ClientContext[index].OTSHandles.ObjListCPCCCDHdl = handle;
+          APP_DBG_MSG(", Object List Control Point CCCD found: handle=0x%04X\n", handle);
+        }
+/* USER CODE END gatt_parse_descs_1 */
+        else
+        {
+          APP_DBG_MSG("\n");
+        }
+      }
+      else
+      {
+        gattCharValueHdl = handle;
+
+        //APP_DBG_MSG("  UUID=0x%04X, handle=0x%04X\n", uuid, handle);
+        
+/* USER CODE BEGIN gatt_parse_descs_2 */
+        
+/* USER CODE END gatt_parse_descs_2 */
+        
+      }
+      uuid_offset += handle_uuid_pair_size;
+    }
+  }
+  else
+  {
+    APP_DBG_MSG("ACI_ATT_FIND_INFO_RESP_VSEVT_CODE, failed handle not found in connection table !\n");
+  }
+
+  return;
+}
+
+static void gatt_parse_notification(aci_gatt_clt_notification_event_rp0 *p_evt)
+{
+//  APP_DBG_MSG("ACI_GATT_NOTIFICATION_VSEVT_CODE - ConnHdl=0x%04X, Attribute_Handle=0x%04X\n",
+//              p_evt->Connection_Handle,
+//              p_evt->Attribute_Handle);
+/* USER CODE BEGIN gatt_parse_notification_1 */
+  GATT_CLIENT_APP_Notification_evt_t Notification;
+  uint8_t index;
+
+  for (index = 0 ; index < CFG_BLE_NUM_CLIENT_CONTEXTS ; index++)
+  {
+    if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+    {
+      break;
+    }
+  }
+
+  if (a_ClientContext[index].connHdl == p_evt->Connection_Handle)
+  {
+    if (p_evt->Attribute_Handle == a_ClientContext[index].ESLControlPointValueHdl)
+    {
+      /* The AP shall stop the timer when a notification of the ESL Control Point 
+         characteristic is received in response to the command.*/
+      HAL_RADIO_TIMER_StopVirtualTimer(&a_ClientContext[index].ECP_timer_Id);
+
+      APP_DBG_MSG("Incoming Nofification from ECP\n");
+      Notification.Client_Evt_Opcode = ESL_NOTIFICATION_INFO_RECEIVED_EVT;
+      Notification.DataTransfered.length = p_evt->Attribute_Value_Length;
+      Notification.DataTransfered.p_Payload = &p_evt->Attribute_Value[0];
+
+      gatt_Notification(&Notification);
+    }
+  }
+  else
+  {
+    APP_DBG_MSG("ACI_GATT_NOTIFICATION_VSEVT_CODE, failed handle not found in connection table !\n");
+  }
+/* USER CODE END gatt_parse_notification_1 */
+
+  return;
+}
+
+static void client_discover_all(void)
+{
+  uint8_t index;
+  tBleStatus status;
+
+  for(index = 0; index < CFG_BLE_NUM_CLIENT_CONTEXTS; index++)
+  {
+    if(a_ClientContext[index].state == GATT_CLIENT_APP_DISCOVER_SERVICES)
+    {
+    	
+      /* Exchange configuration must be done only once. If alraeady done, it will return error.  */
+      status = aci_gatt_clt_exchange_config(a_ClientContext[0].connHdl);
+      if (status != BLE_STATUS_SUCCESS)
+      {
+        APP_DBG_MSG("aci_gatt_clt_exchange_config failure: reason=0x%02X\n", status);
+      }
+      else
+      {
+        APP_DBG_MSG("==>> aci_gatt_clt_exchange_config : Success\n");
+        gatt_cmd_resp_wait();
+      } 
+      gatt_procedure(index, PROC_GATT_DISC_ALL_PRIMARY_SERVICES);
+      gatt_procedure(index, PROC_GATT_DISC_ALL_CHARS);
+      gatt_procedure(index, PROC_GATT_DISC_ALL_DESCS);
+      gatt_procedure(index, PROC_GATT_ENABLE_ALL_NOTIFICATIONS);
+      
+#ifndef PTS_OTP  
+      if (ESL_AP_Context.configuring)
+      {
+        GATT_CLIENT_APP_ReadAllInfo();
+        GATT_CLIENT_APP_ConfigureESL();
+       }
+#endif
+
+      a_ClientContext[index].state = GATT_CLIENT_APP_CONNECTED;
+
+      /* Check if in the meantime another server has been connected. */
+      UTIL_SEQ_SetTask( 1U << CFG_TASK_DISCOVER_SERVICES_ID, CFG_SEQ_PRIO_0);
+
+      break;
+    }
+  }
+
+  return;
+}
+
+static void gatt_cmd_resp_release(void)
+{
+  UTIL_SEQ_SetEvt(1U << CFG_IDLEEVT_PROC_GATT_COMPLETE);
+  return;
+}
+
+static void gatt_cmd_resp_wait(void)
+{
+  UTIL_SEQ_WaitEvt(1U << CFG_IDLEEVT_PROC_GATT_COMPLETE);
+  return;
+}
+
+/* USER CODE BEGIN LF */
+
+/* If the AP establish a bond with an ESL and ESL is on Configuring state,
+   the AP can configure ESL by writing some ESL Service characteristics  
+   (called on ACI_GAP_PAIRING_COMPLETE_VSEVT_CODE) */
+uint8_t GATT_CLIENT_APP_ConfigureESL(void)
+{
+  uint8_t index = 0;
+  uint8_t ret;
+  esl_info_t *p_esl_info = &ESL_AP_Context.conn_esl_info;
+  
+  /* ESL Address characteristic */
+  APP_DBG_MSG("Writing ESL Address (0x%04X)\n", p_esl_info->esl_address);
+  ret = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           a_ClientContext[index].ESLAddressValueHdl,
+                           2,
+                           (uint8_t *)&p_esl_info->esl_address); 
+  
+  if (ret != BLE_STATUS_SUCCESS)
+  {
+    APP_DBG_MSG(" Failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                a_ClientContext[index].connHdl,
+                a_ClientContext[index].ESLAddressValueHdl);
+    return 1;
+  }
+  else
+  {
+    /* wait until a gatt procedure complete is received */
+    gatt_cmd_resp_wait();
+    
+    if(a_ClientContext[0].gatt_error_code)
+    {
+      return 1;
+    }
+  }
+  
+  if(ESL_AP_Context.provisioning)
+  {
+    /* keys are written only during provisioning. We let write other characteristics
+       even if we are just updating ESL.  */
+  
+    //AP Sync Material characteristic
+    APP_DBG_MSG("Writing AP Sync Material\n");  
+    ret = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                             BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                             a_ClientContext[index].APSyncKeyMaterialValueHdl,
+                             24,
+                             (uint8_t *)&ESL_AP_Context.ap_sync_key_material); 
+    
+    if (ret != BLE_STATUS_SUCCESS)
+    {
+      APP_DBG_MSG(" Failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                  a_ClientContext[index].connHdl,
+                  a_ClientContext[index].APSyncKeyMaterialValueHdl);
+      return 1;
+    }
+    else
+    {
+      /* wait until a gatt procedure complete is received */
+      gatt_cmd_resp_wait();
+      
+      if(a_ClientContext[0].gatt_error_code)
+      {
+        return 1;
+      }
+    }
+    
+    //ESL Resp Key Material characteristic  
+    ESL_AP_GenerateKeyMaterial(&p_esl_info->esl_resp_key_material);
+    
+    APP_DBG_MSG("Writing Response Key Material:\n");
+    APP_DBG_MSG("Session key: ");
+    for(int i = sizeof(p_esl_info->esl_resp_key_material.session_key); i >= 0; i--)
+    {
+      APP_DBG_MSG("%02X ", p_esl_info->esl_resp_key_material.session_key[i]);
+    }
+    APP_DBG_MSG("\nIV: ");
+    for(int i = sizeof(p_esl_info->esl_resp_key_material.iv); i >= 0; i--)
+    {
+      APP_DBG_MSG("%02X ", p_esl_info->esl_resp_key_material.iv[i]);
+    }
+    APP_DBG_MSG("\n");
+    
+    ret = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                             BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                             a_ClientContext[index].ESLRespKeyMaterialValueHdl,
+                             24,
+                             (uint8_t *)&p_esl_info->esl_resp_key_material); //ESL Resp Key Material
+    
+    if (ret != BLE_STATUS_SUCCESS)
+    {
+      APP_DBG_MSG(" Failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                  a_ClientContext[index].connHdl,
+                  a_ClientContext[index].ESLRespKeyMaterialValueHdl);
+      return 1;
+    }
+    else
+    {
+      /* wait until a gatt procedure complete is received */
+      gatt_cmd_resp_wait();
+      
+      if(a_ClientContext[0].gatt_error_code)
+      {
+        return 1;
+      }
+    }
+  }
+  
+  /* ESL Current Absolute Time characteristic */  
+  uint32_t absoluteTime = TIMEREF_GetCurrentAbsTime();
+  APP_DBG_MSG("Writing Absolute time (%u)\n", (unsigned int)absoluteTime);
+  ret = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           a_ClientContext[index].ESLCurrAbsTimeValueHdl,
+                           4,
+                           (uint8_t *)&absoluteTime);
+  
+  if (ret != BLE_STATUS_SUCCESS)
+  {
+    APP_DBG_MSG(" Failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                a_ClientContext[index].connHdl,
+                a_ClientContext[index].ESLCurrAbsTimeValueHdl);
+    return 1;
+  }
+  else
+  {
+    /* wait until a gatt procedure complete is received */
+    gatt_cmd_resp_wait();
+    
+    if(a_ClientContext[0].gatt_error_code)
+    {
+      return 1;
+    }
+  }
+  
+  if(ESL_AP_Context.configuring)
+  {
+    ret = ESL_AP_CmdUpdateComplete();
+    if(ret)
+    {
+      APP_DBG_MSG("Fail sending update complete command\n");
+      return 2;
+    }
+  }
+  
+  ret = ESL_AP_StoreESLInfo(&ESL_AP_Context.conn_esl_info);
+  if(ret == 0)
+  {
+    APP_DBG_MSG("ESL configuration saved\n");
+  }
+  else
+  {
+    APP_DBG_MSG("Error while saving configuration\n");
+    aci_gap_terminate(a_ClientContext[0].connHdl, BLE_ERROR_TERMINATED_REMOTE_USER);
+    
+    return 2;
+  }
+  
+  return 0;
+}
+
+/* If bResponse is true the command wait for an ESL response, else the 
+   command has no response, so the timer ECP_TIMEOUT_MS must not start */
+uint8_t GATT_CLIENT_APP_WriteECP(uint8_t* cmd, uint8_t len_cmd, bool bResponse)
+{
+  tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
+  uint8_t index = 0;
+  
+  /* If an ECP procedure times out, then the AP shall not start a new ECP 
+   procedure until a new link is established with the ESL.*/
+  if(!a_ClientContext[index].b_ECP_failed)
+  {    
+    APP_DBG_MSG("Writing ECP\n");
+    
+    ret = aci_gatt_clt_write(a_ClientContext[index].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           a_ClientContext[index].ESLControlPointValueHdl,
+                           len_cmd,
+                           cmd);
+    
+    if (ret != BLE_STATUS_SUCCESS)
+    {  
+      APP_DBG_MSG(" Failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                  a_ClientContext[index].connHdl,
+                  a_ClientContext[index].ESLControlPointValueHdl);
+      return ret;
+    }
+    /* wait until a gatt procedure complete is received */
+    gatt_cmd_resp_wait();
+    
+    if(a_ClientContext[index].gatt_error_code != 0)
+    {
+      APP_DBG_MSG(" Procedure failed with gatt_error_code = 0x%02X\n",
+                  a_ClientContext[index].gatt_error_code);
+      return a_ClientContext[index].gatt_error_code;
+    }
+   
+    /* When the AP writes to the ECP, the AP shall start a timer with the value  
+       set to the ESL Control Point Timeout period.*/
+    if (bResponse)
+      HAL_RADIO_TIMER_StartVirtualTimer(&a_ClientContext[index].ECP_timer_Id, ECP_TIMEOUT_MS);
+  }  
+  return ret;
+}
+
+static void ECPTimeout(void *arg)
+{  
+  APP_DBG_MSG("ECP procedure failed\n");
+  /* If an ECP procedure times out, then the AP shall not start a new ECP 
+     procedure until a new link is established with the ESL.*/
+  set_ECP_Failed(true);
+}
+
+static void set_ECP_Failed(bool bValue)
+{
+  uint8_t index = 0;
+  
+  a_ClientContext[index].b_ECP_failed = bValue;
+}
+
+static void print_Info_Char(void)
+{
+  for (int i = 0; i < a_ClientContext[0].read_char_len; i++) 
+  {
+    APP_DBG_MSG("%02X", a_ClientContext[0].read_char[i]);
+    if (i < a_ClientContext[0].read_char_len-1) 
+      APP_DBG_MSG(":");
+  }    
+  APP_DBG_MSG("\n");
+}
+
+uint8_t GATT_CLIENT_APP_ReadAllInfo(void)
+{
+  tBleStatus ret = 0;
+  
+//  APP_DBG_MSG("ESL_AP_Read_Info_Chars!\n");
+  
+  APP_DBG_MSG("Read Display Information\n");
+  GATT_CLIENT_APP_ReadDisplayInfo(); 
+  
+  APP_DBG_MSG("Read Image Information\n");
+  GATT_CLIENT_APP_ReadImageInfo();
+  
+  APP_DBG_MSG("Read Sensor Information\n");
+  GATT_CLIENT_APP_ReadSensorInfo();
+  
+  APP_DBG_MSG("Read LED Information\n");
+  GATT_CLIENT_APP_ReadLedInfo();
+  
+  APP_DBG_MSG("Read PnP ID\n");
+  GATT_CLIENT_APP_ReadPnPID();
+  
+  return ret;
+}
+  
+
+uint8_t GATT_CLIENT_APP_ReadDisplayInfo(void)
+{
+  uint8_t index = 0;
+  
+  if(a_ClientContext[index].ESLDisplayInfoValueHdl == 0)
+    return BLE_STATUS_ERROR;
+
+  return ReadInfoChar(a_ClientContext[index].ESLDisplayInfoValueHdl); 
+}
+
+uint8_t GATT_CLIENT_APP_ReadImageInfo(void)
+{
+  uint8_t index = 0;
+  
+  if(a_ClientContext[index].ESLImageInfoValueHdl == 0)
+    return BLE_STATUS_ERROR;
+
+  return ReadInfoChar(a_ClientContext[index].ESLImageInfoValueHdl); 
+}
+
+uint8_t GATT_CLIENT_APP_ReadSensorInfo(void)
+{
+  uint8_t index = 0;
+  
+  if(a_ClientContext[index].ESLSensorInfoValueHdl == 0)
+    return BLE_STATUS_ERROR;
+
+
+  return ReadInfoChar(a_ClientContext[index].ESLSensorInfoValueHdl); 
+}
+
+uint8_t GATT_CLIENT_APP_ReadLedInfo(void)
+{
+  uint8_t index = 0;
+  
+  if(a_ClientContext[index].ESLLedInfoValueHdl == 0)
+    return BLE_STATUS_ERROR;
+
+
+  return ReadInfoChar(a_ClientContext[index].ESLLedInfoValueHdl); 
+}
+
+uint8_t GATT_CLIENT_APP_ReadPnPID(void)
+{
+  uint8_t index = 0;
+  
+  if(a_ClientContext[index].DISPNPIdValueHdl == 0)
+    return BLE_STATUS_ERROR;
+
+
+  return ReadInfoChar(a_ClientContext[index].DISPNPIdValueHdl); 
+}
+
+static uint8_t ReadInfoChar(uint16_t ValueHdl)
+{
+  uint8_t index = 0;
+  tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
+  
+  //APP_DBG_MSG("ESL_AP_Read_Info_Chars!\n");
+  
+  a_ClientContext[index].read_char_offset = 0;
+
+  /* Display Information characteristic */
+  ret = aci_gatt_clt_read(a_ClientContext[index].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           ValueHdl); 
+
+  if (ret != BLE_STATUS_SUCCESS)
+  {
+    APP_DBG_MSG("aci_gatt_clt_read failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                a_ClientContext[index].connHdl,
+                ValueHdl);
+    return ret;
+  }
+  APP_DBG_MSG("aci_gatt_clt_read, connHdl=0x%04X, ValueHdl=0x%04X\n",
+            a_ClientContext[index].connHdl,
+            ValueHdl);
+  /* wait until a gatt procedure complete is received */
+  gatt_cmd_resp_wait();
+  
+  if (a_ClientContext[0].read_char_len >= (a_ClientContext[0].att_mtu - 1))
+  {
+    /* Display Information characteristic Read long */
+    ret = ReadLongChar(ValueHdl, a_ClientContext[0].read_char_len);
+  }  
+  print_Info_Char();
+  
+  return ret;
+}
+
+static uint8_t ReadLongChar(uint16_t ValueHdl, uint16_t Offset)
+{
+  uint8_t index = 0;
+  tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
+  
+  APP_DBG_MSG("Read Long\n");
+
+  ret = aci_gatt_clt_read_long(a_ClientContext[index].connHdl,
+                               BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                               ValueHdl,
+                               Offset); 
+
+  if (ret != BLE_STATUS_SUCCESS)
+  {
+    APP_DBG_MSG("aci_gatt_clt_read_long failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                a_ClientContext[index].connHdl,
+                ValueHdl);
+    return ret;
+  }
+  /* wait until a gatt procedure complete is received */
+  gatt_cmd_resp_wait();  
+  APP_DBG_MSG("aci_gatt_clt_read_long, connHdl=0x%04X, ValueHdl=0x%04X\n",
+              a_ClientContext[index].connHdl,
+              ValueHdl);
+  
+  return a_ClientContext[0].gatt_error_code;  
+}
+
+tBleStatus GATT_CLIENT_APP_ReadChar(uint16_t ValueHdl, uint8_t **data_p, uint16_t *data_length_p)
+{
+  tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
+  
+  a_ClientContext[0].read_char_offset = 0;
+
+  ret = aci_gatt_clt_read(a_ClientContext[0].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           ValueHdl); 
+
+  if (ret != BLE_STATUS_SUCCESS)
+  {
+    APP_DBG_MSG("aci_gatt_clt_read failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                a_ClientContext[0].connHdl,
+                ValueHdl);
+    return ret;
+  }
+  APP_DBG_MSG("aci_gatt_clt_read, connHdl=0x%04X, ValueHdl=0x%04X\n",
+            a_ClientContext[0].connHdl,
+            ValueHdl);
+  /* wait until a gatt procedure complete is received */
+  gatt_cmd_resp_wait();
+  
+  if (a_ClientContext[0].read_char_len >= (a_ClientContext[0].att_mtu - 1))
+  {
+    ret = ReadLongChar(ValueHdl, a_ClientContext[0].read_char_len);
+  }
+  
+  *data_p = a_ClientContext[0].read_char;
+  *data_length_p = a_ClientContext[0].read_char_len;
+  
+  return ret;
+}
+
+tBleStatus GATT_CLIENT_APP_WriteChar(uint16_t ValueHdl, uint8_t *data, uint16_t data_length)
+{
+  tBleStatus ret = BLE_STATUS_INVALID_PARAMS;
+  
+  a_ClientContext[0].gatt_error_code = 0;
+
+  ret = aci_gatt_clt_write(a_ClientContext[0].connHdl,
+                           BLE_GATT_UNENHANCED_ATT_L2CAP_CID,
+                           ValueHdl,
+                           data_length,
+                           data); 
+
+  if (ret != BLE_STATUS_SUCCESS)
+  {
+    APP_DBG_MSG("aci_gatt_clt_write failed, connHdl=0x%04X, ValueHdl=0x%04X\n",
+                a_ClientContext[0].connHdl,
+                ValueHdl);
+    return ret;
+  }
+  APP_DBG_MSG("aci_gatt_clt_write, connHdl=0x%04X, ValueHdl=0x%04X\n",
+            a_ClientContext[0].connHdl,
+            ValueHdl);
+  /* wait until a gatt procedure complete is received */
+  gatt_cmd_resp_wait();
+  
+  return a_ClientContext[0].gatt_error_code;
+}
+
+/* USER CODE END LF */
