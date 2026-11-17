@@ -121,6 +121,19 @@ typedef struct
     uint32_t confidence_q15;
     uint32_t adaptive_threshold;
 } ECG_RPeakEvent;
+
+/*
+ * Temperature measurement for the BLE thread (3 ULONG = 12 bytes).
+ * flags: TEMP_FLAG_* bits. raw is valid only with TEMP_FLAG_VALID.
+ */
+typedef struct
+{
+    uint32_t timestamp_ms;   /* HAL_GetTick() when the value was read */
+    uint16_t seq;            /* +1 per measurement attempt, wraps */
+    int16_t  raw;            /* MAX30205 register, 1/256 C per LSB */
+    uint8_t  flags;
+    uint8_t  reserved[3];
+} BLE_TempSample;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -194,6 +207,26 @@ typedef struct
 #define BLE_ECG_QUEUE_MESSAGE_SIZE         4U
 #define BLE_SCG_QUEUE_CAPACITY             1024U
 #define BLE_SCG_QUEUE_MESSAGE_SIZE         4U
+
+/*
+ * Temperature thread (MAX30205 on I2C1).
+ * Lowest priority of the application threads: it sleeps between
+ * measurements and blocks on a semaphore during I2C transfers, so it
+ * never delays ECG / SCG acquisition, processing, BLE or USB.
+ */
+#define TEMP_THREAD_STACK_SIZE             1024U
+#define TEMP_THREAD_PRIORITY               12U
+#define TEMP_MEASURE_PERIOD_MS             5000U
+/* First measurement after boot (lets the BLE stack start first) */
+#define TEMP_FIRST_MEASURE_DELAY_MS        3000U
+
+/* BLE_TempSample.flags */
+#define TEMP_FLAG_VALID                    0x01U  /* raw holds a new value */
+#define TEMP_FLAG_SENSOR_ERROR             0x02U  /* I2C error or no sensor */
+
+/* Measurements waiting for the BLE thread (20 s at 5 s per value) */
+#define BLE_TEMP_QUEUE_CAPACITY            4U
+#define BLE_TEMP_QUEUE_MESSAGE_SIZE        3U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -230,10 +263,12 @@ extern TX_QUEUE ecg_rpeak_queue;
 extern TX_QUEUE ble_rpeak_queue;
 extern TX_QUEUE ble_ecg_queue;
 extern TX_QUEUE ble_scg_queue;
+extern TX_QUEUE ble_temp_queue;
 
 void scg_acquisition_thread_entry(ULONG thread_input);
 void ecg_processing_thread_entry(ULONG thread_input);
 void ble_processing_thread_entry(ULONG thread_input);
+void temperature_thread_entry(ULONG thread_input);
 /* USER CODE END EFP */
 
 /* USER CODE BEGIN 1 */
