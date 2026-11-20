@@ -201,7 +201,7 @@ HAL_StatusTypeDef ICM20948_Init(void)
         return HAL_ERROR;
     }
 
-    status = ICM20948_ConfigureAccelerometerSCG();
+    status = ICM20948_ConfigureImuSCG();
 
     if (status != HAL_OK)
     {
@@ -210,7 +210,7 @@ HAL_StatusTypeDef ICM20948_Init(void)
 
     /*
      * Start Data Ready interrupt generation only after
-     * the accelerometer configuration is complete.
+     * the accelerometer and gyroscope configuration is complete.
      */
     status = ICM20948_EnableDataReadyInterrupt();
 
@@ -222,7 +222,7 @@ HAL_StatusTypeDef ICM20948_Init(void)
     return HAL_OK;
 }
 
-HAL_StatusTypeDef ICM20948_ConfigureAccelerometerSCG(void)
+HAL_StatusTypeDef ICM20948_ConfigureImuSCG(void)
 {
     HAL_StatusTypeDef status;
     uint8_t readback = 0;
@@ -230,11 +230,11 @@ HAL_StatusTypeDef ICM20948_ConfigureAccelerometerSCG(void)
 
     /*
      * User Bank 0:
-     * Enable all accelerometer axes and disable all gyroscope axes.
+     * Enable all accelerometer and gyroscope axes.
      *
      * PWR_MGMT_2:
      * bits [5:3] = accelerometer disable bits → 000: all enabled
-     * bits [2:0] = gyroscope disable bits     → 111: all disabled
+     * bits [2:0] = gyroscope disable bits     → 000: all enabled
      */
     status = ICM20948_SelectBank(0);
 
@@ -245,15 +245,74 @@ HAL_StatusTypeDef ICM20948_ConfigureAccelerometerSCG(void)
 
     status = ICM20948_WriteRegister(
         ICM20948_REG_PWR_MGMT_2,
-        0x07);
+        ICM20948_PWR_MGMT_2_ALL_ON);
 
     if (status != HAL_OK)
     {
         return status;
     }
 
-    /* Accelerometer configuration registers are in User Bank 2 */
+    status = ICM20948_ReadRegister(
+        ICM20948_REG_PWR_MGMT_2,
+        &readback);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    if ((readback & 0x3FU) != ICM20948_PWR_MGMT_2_ALL_ON)
+    {
+        return HAL_ERROR;
+    }
+
+    /* Accelerometer and gyroscope configuration registers are in User Bank 2 */
     status = ICM20948_SelectBank(2);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    /*
+     * Gyroscope ODR:
+     * ODR = 1100 / (1 + divider) = 550 samples/s
+     */
+    status = ICM20948_WriteRegister(
+        ICM20948_REG_GYRO_SMPLRT_DIV,
+        (uint8_t)ICM20948_GYRO_SMPLRT_DIV_SCG);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    /*
+     * ±250 dps, DLPF enabled, approximately 119.5 Hz bandwidth
+     */
+    status = ICM20948_WriteRegister(
+        ICM20948_REG_GYRO_CONFIG_1,
+        ICM20948_GYRO_CONFIG_1_SCG);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    /* Verify GYRO_CONFIG_1 */
+    status = ICM20948_ReadRegister(
+        ICM20948_REG_GYRO_CONFIG_1,
+        &readback);
+
+    if (status != HAL_OK)
+    {
+        return status;
+    }
+
+    if ((readback & 0x3FU) != ICM20948_GYRO_CONFIG_1_SCG)
+    {
+        return HAL_ERROR;
+    }
 
     if (status != HAL_OK)
     {
@@ -316,21 +375,27 @@ HAL_StatusTypeDef ICM20948_ConfigureAccelerometerSCG(void)
     return ICM20948_SelectBank(0);
 }
 
-HAL_StatusTypeDef ICM20948_ReadAccelRaw(
-    ICM20948_AccelRaw *accel)
+/* Big-endian signed 16-bit value from two output register bytes */
+static int16_t ICM20948_ToInt16(const uint8_t *data)
+{
+    return (int16_t)(((uint16_t)data[0] << 8) | (uint16_t)data[1]);
+}
+
+HAL_StatusTypeDef ICM20948_ReadImuRaw(
+    ICM20948_ImuRaw *imu)
 {
     HAL_StatusTypeDef status;
 
-    uint8_t tx_data[7] = {0};
-    uint8_t rx_data[7] = {0};
+    uint8_t tx_data[1U + ICM20948_IMU_DATA_BYTES] = {0};
+    uint8_t rx_data[1U + ICM20948_IMU_DATA_BYTES] = {0};
 
-    if (accel == NULL)
+    if (imu == NULL)
     {
         return HAL_ERROR;
     }
 
     /*
-     * Accelerometer output registers are in User Bank 0.
+     * Accelerometer and gyroscope output registers are in User Bank 0.
      */
     status = ICM20948_SelectBank(0);
 
@@ -341,7 +406,9 @@ HAL_StatusTypeDef ICM20948_ReadAccelRaw(
 
     /*
      * First byte: register address with read bit set.
-     * Remaining six bytes generate SPI clocks for XYZ data.
+     * The remaining 12 bytes generate SPI clocks for
+     * accelerometer XYZ (0x2D..0x32) and gyroscope XYZ (0x33..0x38).
+     * One burst keeps the six values from the same register snapshot.
      */
     tx_data[0] = ICM20948_REG_ACCEL_XOUT_H | 0x80U;
 
@@ -362,19 +429,15 @@ HAL_StatusTypeDef ICM20948_ReadAccelRaw(
     }
 
     /*
-     * Each accelerometer axis is big-endian signed 16-bit.
+     * Each axis is big-endian signed 16-bit.
      */
-    accel->x = (int16_t)(
-        ((uint16_t)rx_data[1] << 8) |
-         (uint16_t)rx_data[2]);
+    imu->accel_x = ICM20948_ToInt16(&rx_data[1]);
+    imu->accel_y = ICM20948_ToInt16(&rx_data[3]);
+    imu->accel_z = ICM20948_ToInt16(&rx_data[5]);
 
-    accel->y = (int16_t)(
-        ((uint16_t)rx_data[3] << 8) |
-         (uint16_t)rx_data[4]);
-
-    accel->z = (int16_t)(
-        ((uint16_t)rx_data[5] << 8) |
-         (uint16_t)rx_data[6]);
+    imu->gyro_x = ICM20948_ToInt16(&rx_data[7]);
+    imu->gyro_y = ICM20948_ToInt16(&rx_data[9]);
+    imu->gyro_z = ICM20948_ToInt16(&rx_data[11]);
 
     return HAL_OK;
 }
@@ -414,8 +477,8 @@ HAL_StatusTypeDef ICM20948_EnableDataReadyInterrupt(void)
     }
 
     /*
-     * Generate an INT1 pulse whenever new accelerometer
-     * raw data is ready.
+     * Generate an INT1 pulse whenever new raw sensor
+     * data is ready.
      */
     status = ICM20948_WriteRegister(
         ICM20948_REG_INT_ENABLE_1,

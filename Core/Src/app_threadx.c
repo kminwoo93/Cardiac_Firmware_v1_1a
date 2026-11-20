@@ -67,6 +67,8 @@ TX_QUEUE ble_ecg_queue;
 TX_QUEUE ble_scg_queue;
 /* Temperature measurements read by the BLE thread */
 TX_QUEUE ble_temp_queue;
+/* Copy of the temperature measurements read by the USB CDC thread */
+TX_QUEUE usb_temp_queue;
 /*
  * Timestamp event queues written by the EXTI callbacks
  * and read by the acquisition threads.
@@ -91,7 +93,9 @@ static ULONG ble_ecg_queue_storage[
 static ULONG ble_scg_queue_storage[
     BLE_SCG_QUEUE_CAPACITY * BLE_SCG_QUEUE_MESSAGE_SIZE];
 static ULONG ble_temp_queue_storage[
-    BLE_TEMP_QUEUE_CAPACITY * BLE_TEMP_QUEUE_MESSAGE_SIZE];
+    BLE_TEMP_QUEUE_CAPACITY * TEMP_QUEUE_MESSAGE_SIZE];
+static ULONG usb_temp_queue_storage[
+    USB_TEMP_QUEUE_CAPACITY * TEMP_QUEUE_MESSAGE_SIZE];
 /*
  * Static storage for timestamp queues.
  *
@@ -144,6 +148,7 @@ volatile uint32_t temp_measure_count = 0U;      /* attempts */
 volatile uint32_t temp_valid_count = 0U;
 volatile uint32_t temp_error_count = 0U;
 volatile uint32_t ble_temp_queue_overflow_count = 0U;
+volatile uint32_t usb_temp_queue_overflow_count = 0U;
 volatile uint8_t  temp_sensor_ready = 0U;
 volatile uint8_t  temp_last_status = 0xFFU;     /* MAX30205_Status */
 volatile int16_t  temp_last_raw = 0;
@@ -190,6 +195,13 @@ volatile HAL_StatusTypeDef scg_spi_last_status = HAL_OK;
 volatile int16_t scg_accel_x_raw = 0;
 volatile int16_t scg_accel_y_raw = 0;
 volatile int16_t scg_accel_z_raw = 0;
+
+/*
+ * Most recently acquired raw gyroscope values (131 LSB per dps).
+ */
+volatile int16_t scg_gyro_x_raw = 0;
+volatile int16_t scg_gyro_y_raw = 0;
+volatile int16_t scg_gyro_z_raw = 0;
 
 /*
  * ECG timestamp queue diagnostics.
@@ -530,16 +542,24 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   /*
    * Temperature measurement queue and thread.
    */
-  if (sizeof(BLE_TempSample) !=
-      (BLE_TEMP_QUEUE_MESSAGE_SIZE * sizeof(ULONG)))
+  if (sizeof(Temp_Sample) !=
+      (TEMP_QUEUE_MESSAGE_SIZE * sizeof(ULONG)))
   {
       return TX_SIZE_ERROR;
   }
 
   if (tx_queue_create(&ble_temp_queue, "ble_temp_queue",
-                      BLE_TEMP_QUEUE_MESSAGE_SIZE,
+                      TEMP_QUEUE_MESSAGE_SIZE,
                       ble_temp_queue_storage,
                       sizeof(ble_temp_queue_storage)) != TX_SUCCESS)
+  {
+      return TX_QUEUE_ERROR;
+  }
+
+  if (tx_queue_create(&usb_temp_queue, "usb_temp_queue",
+                      TEMP_QUEUE_MESSAGE_SIZE,
+                      usb_temp_queue_storage,
+                      sizeof(usb_temp_queue_storage)) != TX_SUCCESS)
   {
       return TX_QUEUE_ERROR;
   }
@@ -993,7 +1013,7 @@ void ecg_processing_thread_entry(ULONG thread_input)
  */
 void scg_acquisition_thread_entry(ULONG thread_input)
 {
-	ICM20948_AccelRaw accel_sample;
+	ICM20948_ImuRaw imu_sample;
 	SCG_Sample sample;
 	SensorIrqTimestamp irq_timestamp;
 
@@ -1039,7 +1059,7 @@ void scg_acquisition_thread_entry(ULONG thread_input)
                 irq_timestamp.timestamp_low;
 
             scg_spi_last_status =
-                ICM20948_ReadAccelRaw(&accel_sample);
+                ICM20948_ReadImuRaw(&imu_sample);
 
             if (scg_spi_last_status == HAL_OK)
             {
@@ -1049,9 +1069,13 @@ void scg_acquisition_thread_entry(ULONG thread_input)
                 /*
                  * Keep the latest values for Live Expressions.
                  */
-                scg_accel_x_raw = accel_sample.x;
-                scg_accel_y_raw = accel_sample.y;
-                scg_accel_z_raw = accel_sample.z;
+                scg_accel_x_raw = imu_sample.accel_x;
+                scg_accel_y_raw = imu_sample.accel_y;
+                scg_accel_z_raw = imu_sample.accel_z;
+
+                scg_gyro_x_raw = imu_sample.gyro_x;
+                scg_gyro_y_raw = imu_sample.gyro_y;
+                scg_gyro_z_raw = imu_sample.gyro_z;
 
                 /* Build one SCG sample record. */
                 sample.sample_counter = sample_counter;
@@ -1063,10 +1087,14 @@ void scg_acquisition_thread_entry(ULONG thread_input)
                     ((uint64_t)irq_timestamp.timestamp_high << 32) |
                     (uint64_t)irq_timestamp.timestamp_low;
 
-                sample.accel_x_raw = accel_sample.x;
-                sample.accel_y_raw = accel_sample.y;
-                sample.accel_z_raw = accel_sample.z;
-                sample.reserved = 0;
+                sample.accel_x_raw = imu_sample.accel_x;
+                sample.accel_y_raw = imu_sample.accel_y;
+                sample.accel_z_raw = imu_sample.accel_z;
+                sample.gyro_x_raw = imu_sample.gyro_x;
+                sample.gyro_y_raw = imu_sample.gyro_y;
+                sample.gyro_z_raw = imu_sample.gyro_z;
+                sample.reserved[0] = 0;
+                sample.reserved[1] = 0;
 
                 /*
                  * Do not block the acquisition thread when
@@ -1094,10 +1122,12 @@ void scg_acquisition_thread_entry(ULONG thread_input)
 
                     ble_sample.sample_counter = sample_counter;
                     ble_sample.timestamp_low = irq_timestamp.timestamp_low;
-                    ble_sample.accel_x_raw = accel_sample.x;
-                    ble_sample.accel_y_raw = accel_sample.y;
-                    ble_sample.accel_z_raw = accel_sample.z;
-                    ble_sample.reserved = 0;
+                    ble_sample.accel_x_raw = imu_sample.accel_x;
+                    ble_sample.accel_y_raw = imu_sample.accel_y;
+                    ble_sample.accel_z_raw = imu_sample.accel_z;
+                    ble_sample.gyro_x_raw = imu_sample.gyro_x;
+                    ble_sample.gyro_y_raw = imu_sample.gyro_y;
+                    ble_sample.gyro_z_raw = imu_sample.gyro_z;
 
                     if (tx_queue_send(&ble_scg_queue,
                                       &ble_sample,
@@ -1238,13 +1268,14 @@ static MAX30205_Status Temperature_Measure(int16_t *raw)
  * @brief Temperature thread.
  *
  * Measures the MAX30205 every TEMP_MEASURE_PERIOD_MS and posts the result
- * (or an error flag) to ble_temp_queue. All I2C1 traffic happens here.
+ * (or an error flag) to ble_temp_queue (BLE) and usb_temp_queue (USB CDC).
+ * All I2C1 traffic happens here.
  * After an error the bus is recovered and the sensor initialized again
  * before the next measurement.
  */
 void temperature_thread_entry(ULONG thread_input)
 {
-    BLE_TempSample sample;
+    Temp_Sample sample;
     MAX30205_Status status;
     int16_t raw = 0;
     uint16_t seq = 0U;
@@ -1286,6 +1317,8 @@ void temperature_thread_entry(ULONG thread_input)
         temp_last_status = (uint8_t)status;
 
         sample.timestamp_ms = HAL_GetTick();
+        Timestamp_CaptureFromISR(&sample.timestamp_high,
+                                 &sample.timestamp_low);
         sample.seq = seq++;
         sample.reserved[0] = 0U;
         sample.reserved[1] = 0U;
@@ -1315,6 +1348,12 @@ void temperature_thread_entry(ULONG thread_input)
         if (tx_queue_send(&ble_temp_queue, &sample, TX_NO_WAIT) != TX_SUCCESS)
         {
             ble_temp_queue_overflow_count++;
+        }
+
+        /* Copy for the USB CDC "T" record */
+        if (tx_queue_send(&usb_temp_queue, &sample, TX_NO_WAIT) != TX_SUCCESS)
+        {
+            usb_temp_queue_overflow_count++;
         }
     }
 }

@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "app_threadx.h"
 #include "main.h"
+#include "max30205.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -75,6 +76,13 @@ volatile uint64_t usb_scg_last_timestamp_us = 0ULL;
 volatile int16_t usb_scg_last_x_raw = 0;
 volatile int16_t usb_scg_last_y_raw = 0;
 volatile int16_t usb_scg_last_z_raw = 0;
+
+volatile int16_t usb_scg_last_gx_raw = 0;
+volatile int16_t usb_scg_last_gy_raw = 0;
+volatile int16_t usb_scg_last_gz_raw = 0;
+
+volatile uint32_t usb_temp_record_count = 0U;
+volatile int32_t  usb_temp_last_milli_c = 0;
 
 volatile uint32_t usb_ecg_batch_record_count = 0U;
 volatile uint32_t usb_scg_batch_record_count = 0U;
@@ -241,6 +249,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 {
 	ECG_Sample sample;
 	ECG_RPeakEvent rpeak_event;
+	Temp_Sample temp_sample;
 	/*
 	     * One SCG message received from scg_sample_queue.
 	     */
@@ -282,6 +291,13 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	    usb_scg_last_y_raw = 0;
 	    usb_scg_last_z_raw = 0;
 
+	    usb_scg_last_gx_raw = 0;
+	    usb_scg_last_gy_raw = 0;
+	    usb_scg_last_gz_raw = 0;
+
+	    usb_temp_record_count = 0U;
+	    usb_temp_last_milli_c = 0;
+
 	    while (1)
 	    {
 	        /*
@@ -302,8 +318,17 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	         */
 	        if (stream_started == 0U)
 	        {
+	        	/*
+	        	 * Column use per record type (docs/BLE_LINK.md, USB CSV):
+	        	 *   E: v1 = ECG CH2 raw, v2 = v3 = 0
+	        	 *   S: v1..v3 = accel XYZ raw, v4..v6 = gyro XYZ raw
+	        	 *   R: v1 = amplitude, v2 = rr_us, v3 = bpm,
+	        	 *      v4 = confidence_q15, v5 = adaptive_threshold
+	        	 *   T: sample_counter = seq, v1 = raw (1/256 C),
+	        	 *      v2 = milli C, v3 = flags
+	        	 */
 	        	static const UCHAR csv_header[] =
-	        	    "record_type,timestamp_us,sample_counter,v1,v2,v3\r\n";
+	        	    "record_type,timestamp_us,sample_counter,v1,v2,v3,v4,v5,v6\r\n";
 	            actual_length = 0;
 
 	            status = ux_device_class_cdc_acm_write(
@@ -445,6 +470,58 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                     batch_record_count++;
                 }
 
+                /*
+                 * Drain pending temperature measurements (one every 5 s).
+                 * T records are:
+                 * T,timestamp_us,seq,raw,milli_c,flags
+                 * raw is 1/256 C per LSB. raw and milli_c are 0 when
+                 * flags bit0 (valid) is clear.
+                 */
+                while ((USB_BATCH_BUFFER_SIZE - batch_length) >=
+                       USB_CSV_ROW_RESERVE)
+                {
+                    int32_t milli_c;
+
+                    if (tx_queue_receive(&usb_temp_queue, &temp_sample,
+                                         TX_NO_WAIT) != TX_SUCCESS)
+                    {
+                        break;
+                    }
+                    if (USB_UInt64ToDecimal(
+                            ((uint64_t)temp_sample.timestamp_high << 32) |
+                            temp_sample.timestamp_low,
+                            timestamp_text,
+                            sizeof(timestamp_text)) == 0U)
+                    {
+                        usb_sample_error_count++;
+                        break;
+                    }
+
+                    milli_c = ((temp_sample.flags & TEMP_FLAG_VALID) != 0U) ?
+                        MAX30205_RawToMilliCelsius(temp_sample.raw) : 0;
+
+                    line_length = snprintf(
+                        (char *)&usb_batch_buffer[batch_length],
+                        USB_BATCH_BUFFER_SIZE - batch_length,
+                        "T,%s,%u,%d,%ld,%u\r\n",
+                        timestamp_text,
+                        (unsigned int)temp_sample.seq,
+                        (int)temp_sample.raw,
+                        (long)milli_c,
+                        (unsigned int)temp_sample.flags);
+                    if ((line_length <= 0) ||
+                        ((uint32_t)line_length >=
+                         (USB_BATCH_BUFFER_SIZE - batch_length)))
+                    {
+                        usb_sample_error_count++;
+                        break;
+                    }
+                    batch_length += (uint32_t)line_length;
+                    batch_record_count++;
+                    usb_temp_record_count++;
+                    usb_temp_last_milli_c = milli_c;
+                }
+
 	            /*
 	             * Drain only the SCG samples that fit in this batch, up to the
 	             * per-batch limit. Check both conditions before queue receive
@@ -499,10 +576,14 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                usb_scg_last_z_raw =
 	                    scg_sample.accel_z_raw;
 
+	                usb_scg_last_gx_raw = scg_sample.gyro_x_raw;
+	                usb_scg_last_gy_raw = scg_sample.gyro_y_raw;
+	                usb_scg_last_gz_raw = scg_sample.gyro_z_raw;
+
 	                /*
 	                 * Append one SCG CSV record.
 	                 *
-	                 * ECG fields are zero because this is an SCG record.
+	                 * v1..v3 = accelerometer XYZ, v4..v6 = gyroscope XYZ.
 	                 */
 	                /*
 	                 * Convert the 64-bit timestamp without relying on
@@ -520,12 +601,15 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                line_length = snprintf(
 	                    (char *)&usb_batch_buffer[batch_length],
 	                    USB_BATCH_BUFFER_SIZE - batch_length,
-	                    "S,%s,%lu,%d,%d,%d\r\n",
+	                    "S,%s,%lu,%d,%d,%d,%d,%d,%d\r\n",
 	                    timestamp_text,
 	                    (unsigned long)scg_sample.sample_counter,
 	                    (int)scg_sample.accel_x_raw,
 	                    (int)scg_sample.accel_y_raw,
-	                    (int)scg_sample.accel_z_raw);
+	                    (int)scg_sample.accel_z_raw,
+	                    (int)scg_sample.gyro_x_raw,
+	                    (int)scg_sample.gyro_y_raw,
+	                    (int)scg_sample.gyro_z_raw);
 	                /*
 	                 * Check whether snprintf succeeded and the row fitted.
 	                 */
