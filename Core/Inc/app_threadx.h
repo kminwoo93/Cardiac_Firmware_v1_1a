@@ -68,7 +68,12 @@ typedef struct
     int16_t accel_y_raw;
     int16_t accel_z_raw;
 
-    int16_t reserved;
+    /* Gyroscope, read in the same SPI burst as the accelerometer */
+    int16_t gyro_x_raw;
+    int16_t gyro_y_raw;
+    int16_t gyro_z_raw;
+
+    int16_t reserved[2];
 } SCG_Sample;
 
 /*
@@ -96,7 +101,7 @@ typedef struct
 } ECG_ProcessingSample;
 
 /*
- * SCG sample copy for the BLE thread (4 ULONG = 16 bytes).
+ * SCG sample copy for the BLE thread (5 ULONG = 20 bytes).
  * The ECG copy uses ECG_ProcessingSample.
  */
 typedef struct
@@ -106,7 +111,9 @@ typedef struct
     int16_t accel_x_raw;
     int16_t accel_y_raw;
     int16_t accel_z_raw;
-    int16_t reserved;
+    int16_t gyro_x_raw;
+    int16_t gyro_y_raw;
+    int16_t gyro_z_raw;
 } BLE_SCGSample;
 
 /* USB record type "R".  RR is microseconds and confidence is Q15. */
@@ -123,17 +130,21 @@ typedef struct
 } ECG_RPeakEvent;
 
 /*
- * Temperature measurement for the BLE thread (3 ULONG = 12 bytes).
+ * Temperature measurement (5 ULONG = 20 bytes), sent to the BLE thread
+ * (ble_temp_queue) and to the USB CDC thread (usb_temp_queue).
  * flags: TEMP_FLAG_* bits. raw is valid only with TEMP_FLAG_VALID.
  */
 typedef struct
 {
-    uint32_t timestamp_ms;   /* HAL_GetTick() when the value was read */
+    uint32_t timestamp_ms;   /* HAL_GetTick() when the value was read (BLE) */
     uint16_t seq;            /* +1 per measurement attempt, wraps */
     int16_t  raw;            /* MAX30205 register, 1/256 C per LSB */
     uint8_t  flags;
     uint8_t  reserved[3];
-} BLE_TempSample;
+    /* TIM2 time when the value was read, same 1 MHz base as ECG/SCG (USB) */
+    uint32_t timestamp_low;
+    uint32_t timestamp_high;
+} Temp_Sample;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -150,7 +161,7 @@ typedef struct
 #define ECG_QUEUE_MESSAGE_SIZE   10U
 
 #define SCG_QUEUE_CAPACITY       128U
-#define SCG_QUEUE_MESSAGE_SIZE   6U
+#define SCG_QUEUE_MESSAGE_SIZE   8U
 
 /*
  * ECG and SCG interrupt timestamp queues.
@@ -206,7 +217,7 @@ typedef struct
 #define BLE_ECG_QUEUE_CAPACITY             1024U
 #define BLE_ECG_QUEUE_MESSAGE_SIZE         4U
 #define BLE_SCG_QUEUE_CAPACITY             1024U
-#define BLE_SCG_QUEUE_MESSAGE_SIZE         4U
+#define BLE_SCG_QUEUE_MESSAGE_SIZE         5U
 
 /*
  * Temperature thread (MAX30205 on I2C1).
@@ -220,13 +231,16 @@ typedef struct
 /* First measurement after boot (lets the BLE stack start first) */
 #define TEMP_FIRST_MEASURE_DELAY_MS        3000U
 
-/* BLE_TempSample.flags */
+/* Temp_Sample.flags */
 #define TEMP_FLAG_VALID                    0x01U  /* raw holds a new value */
 #define TEMP_FLAG_SENSOR_ERROR             0x02U  /* I2C error or no sensor */
 
+/* Temp_Sample size in ULONG, shared by both temperature queues */
+#define TEMP_QUEUE_MESSAGE_SIZE            5U
 /* Measurements waiting for the BLE thread (20 s at 5 s per value) */
 #define BLE_TEMP_QUEUE_CAPACITY            4U
-#define BLE_TEMP_QUEUE_MESSAGE_SIZE        3U
+/* Measurements waiting for the USB CDC thread (20 s at 5 s per value) */
+#define USB_TEMP_QUEUE_CAPACITY            4U
 /* USER CODE END PD */
 
 /* Main thread defines -------------------------------------------------------*/
@@ -264,6 +278,7 @@ extern TX_QUEUE ble_rpeak_queue;
 extern TX_QUEUE ble_ecg_queue;
 extern TX_QUEUE ble_scg_queue;
 extern TX_QUEUE ble_temp_queue;
+extern TX_QUEUE usb_temp_queue;
 
 void scg_acquisition_thread_entry(ULONG thread_input);
 void ecg_processing_thread_entry(ULONG thread_input);

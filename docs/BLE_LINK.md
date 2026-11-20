@@ -91,7 +91,7 @@ BLE 전송 구조를 바꿀 때 기준이 되는 값과 개념을 정리한 문�
 |---|---|---|---|---|
 | 0x0001 | Cardiac Service | | | |
 | 0x0002 | ECG stream | Notify | 가변 (헤더 12 B + 3 B × N) | 패킷이 차면 |
-| 0x0003 | SCG stream | Notify | 가변 (헤더 12 B + 6 B × N) | 패킷이 차면 |
+| 0x0003 | SCG stream | Notify | 가변 (헤더 12 B + 12 B × N) | 패킷이 차면 |
 | 0x0004 | R-peak | Notify | 20 B | 심박마다 (1~3회/s) |
 | 0x0005 | Status | Read, Notify | 20 B | 1 s |
 | 0x0006 | Temperature | Read, Notify | 10 B | 5 s |
@@ -145,22 +145,34 @@ CCCD 비트(`cardiac_gatt_cccd_mask`, Status offset 1): bit0 ECG, bit1 SCG, bit2
 - 전압 환산: 1 LSB = (2 × 2.42 V / 6) / (2^24 − 1) ≈ **48.1 nV**
 - 데이터 속도: 500 Hz × 3 B = **1,500 B/s**
 
-### SCG 샘플: 6 B (3축)
+### SCG 샘플: 12 B (가속도 3축 + 자이로 3축, format version 2)
 
-- ICM-20948 가속도계 원시값입니다. 축마다 `int16`을 little-endian으로 넣습니다.
+- ICM-20948 가속도계와 자이로 원시값입니다. 축마다 `int16`을 little-endian으로 넣습니다.
+- 두 센서 값은 Data Ready 한 번에 SPI burst 한 번(0x2D~0x38, 12 B)으로 같이 읽으므로 timestamp와 sample_counter가 같습니다.
 
   | byte | 내용 |
   |---|---|
-  | 0~1 | X (int16) |
-  | 2~3 | Y (int16) |
-  | 4~5 | Z (int16) |
+  | 0~1 | Accel X (int16) |
+  | 2~3 | Accel Y (int16) |
+  | 4~5 | Accel Z (int16) |
+  | 6~7 | Gyro X (int16) |
+  | 8~9 | Gyro Y (int16) |
+  | 10~11 | Gyro Z (int16) |
 
-- 설정
-  - ODR 562.5 Hz (= 1125 / (1 + 1))
-  - ±2 g (FS_SEL = 0)
-  - DLPF 켜짐, 대역폭 약 111 Hz
-- 환산: **16384 LSB/g**
-- 데이터 속도: 562.5 Hz × 6 B = **3,375 B/s**
+- 가속도 설정
+  - ODR 562.5 Hz (= 1125 / (1 + 1)), 이 값이 SCG 샘플 속도입니다.
+  - ±2 g (ACCEL_FS_SEL = 0), DLPF 켜짐, 대역폭 약 111 Hz
+  - 환산: **16384 LSB/g**
+- 자이로 설정 (`GYRO_CONFIG_1` = 0x11)
+  - ODR 550 Hz (= 1100 / (1 + 1))
+  - ±250 dps (GYRO_FS_SEL = 0), DLPF 켜짐, 대역폭 약 119.5 Hz (GYRO_DLPFCFG = 2)
+  - 환산: **131 LSB/(°/s)**
+- 주의: 가속도(1125 Hz 기준)와 자이로(1100 Hz 기준)의 ODR을 같게 만드는 분주비가 25 Hz 이상에는 없습니다.
+  - 그래서 가속도 Data Ready(562.5 Hz)에 맞춰 자이로의 최신값을 같이 읽습니다.
+  - 자이로는 550 Hz로 갱신되므로 **샘플의 약 2%에서 이전과 같은 자이로 값이 반복**됩니다.
+  - 하드웨어에서 `icm_drdy_irq_count`가 초당 약 562로 유지되는지 확인합니다. 자이로 때문에 인터럽트가 늘면 이 값이 커집니다.
+- 데이터 속도: 562.5 Hz × 12 B = **6,750 B/s**
+- 디버그 변수: `scg_accel_x/y/z_raw`, `scg_gyro_x/y/z_raw`
 
 ---
 
@@ -177,7 +189,7 @@ ECG와 SCG는 **스트림마다 버퍼가 따로 있고, 각자 다른 특성으
 | 2 | u32 | 첫 샘플의 sample_counter |
 | 6 | u32 | 첫 샘플의 timestamp (µs, TIM2) |
 | 10 | u8 | 샘플 수 N |
-| 11 | u8 | format: 상위 4bit = 버전(1), 하위 4bit = 채널 마스크 (ECG 0x2 = CH2, SCG 0x7 = XYZ) |
+| 11 | u8 | format: 상위 4bit = 버전, 하위 4bit = 채널 마스크. ECG = 0x12 (v1, CH2). SCG = **0x2F** (v2, bit0~2 = Accel XYZ, bit3 = Gyro XYZ, 샘플당 12 B). 이전 SCG v1(0x17)은 Accel만 6 B |
 
 ### Notify를 호출하는 조건
 
@@ -200,10 +212,13 @@ ECG와 SCG는 **스트림마다 버퍼가 따로 있고, 각자 다른 특성으
 한 패킷의 샘플 수 = (MTU − 3 − 12) / 샘플당 바이트 수
 ```
 
-| MTU | 샘플에 쓸 수 있는 크기 | ECG (3 B) | SCG (6 B) |
+| MTU | 샘플에 쓸 수 있는 크기 | ECG (3 B) | SCG (12 B) |
 |---|---|---|---|
-| 23 | 20 − 12 = 8 B | 2샘플/패킷 (4 ms) | 1샘플/패킷 (1.8 ms) |
-| **160** | 157 − 12 = **145 B** | **48샘플/패킷 (약 96 ms)** | **24샘플/패킷 (약 43 ms)** |
+| 23 | 20 − 12 = 8 B | 2샘플/패킷 (4 ms) | **0 (전송 안 됨)** |
+| **160** | 157 − 12 = **145 B** | **48샘플/패킷 (약 96 ms)** | **12샘플/패킷 (약 21 ms)** |
+
+- SCG 샘플 하나(12 B)를 넣으려면 MTU가 **27 이상**이어야 합니다. MTU 23인 동안에는 SCG를 보내지 않고, BLE SCG 큐가 넘치면 `ble_scg_queue_overflow_count`가 늘어납니다.
+- 폰이 MTU를 올리지 않아도 연결 1초 뒤 기기가 직접 MTU 교환을 요청하므로(2장) 보통은 1초 안에 해결됩니다.
 
 ---
 
@@ -211,16 +226,21 @@ ECG와 SCG는 **스트림마다 버퍼가 따로 있고, 각자 다른 특성으
 
 | 스트림 | MTU 160 | MTU 23 |
 |---|---|---|
+SCG는 6축(12 B/샘플) 기준입니다.
+
+| 스트림 | MTU 160 | MTU 23 |
+|---|---|---|
 | ECG | 500 / 48 = 10.4개/s | 500 / 2 = 250개/s |
-| SCG | 562.5 / 24 = 23.4개/s | 562.5 / 1 = 562.5개/s |
+| SCG | 562.5 / 12 = 46.9개/s | 전송 안 됨 (5장) |
 | R-peak | 1~3개/s (60~180 bpm) | 1~3개/s |
 | Status | 1개/s | 1개/s |
 | Temperature | 0.2개/s (5 s 주기) | 0.2개/s |
-| **합계** | **약 38개/s** | **약 817개/s** |
+| **합계** | **약 62개/s** | **약 255개/s (SCG 제외)** |
 
-- MTU 160에서 필요한 양은 약 38개/s입니다. 가정한 전송률 133개/s의 약 29%입니다.
-  - event당 필요한 notification 수 = 38 / 33.3 ≈ 1.14이므로, **event당 2개만 보낼 수 있어도 충분합니다.**
-- MTU 23으로 남으면 필요한 양이 약 817개/s로, 가정한 전송률(133개/s)을 크게 넘습니다. 이 경우 BLE 큐(약 2초분)가 넘치면서 샘플이 빠집니다.
+- MTU 160에서 필요한 양은 약 62개/s입니다. event당 필요한 notification 수 = 62 / 33.3 ≈ 1.86입니다.
+  - S21 포화 시험 최대치(17.9개/event, 1장)의 약 10%이므로 여유가 있습니다.
+  - (SCG가 3축이던 때는 38개/s, event당 1.14개였습니다.)
+- MTU 23으로 남으면 SCG는 보내지 못하고, ECG만으로도 약 255개/s가 필요합니다. BLE 큐(약 2초분)가 넘치면서 샘플이 빠집니다.
   - **MTU가 160으로 협상되는지가 링크 전체에서 가장 중요한 조건입니다.**
 
 ---
@@ -242,7 +262,7 @@ ECG와 SCG는 **스트림마다 버퍼가 따로 있고, 각자 다른 특성으
 
 | 항목 | 가정 | 샘플 크기 | 패킷당 샘플 수 (MTU 160, 145 B) |
 |---|---|---|---|
-| SCG 6축 | 가속도 3축 + 자이로 3축, int16, 562.5 Hz | 12 B | 12 (약 21 ms) |
+| SCG 6축 (**적용 완료**) | 가속도 3축 + 자이로 3축, int16, 562.5 Hz | 12 B | 12 (약 21 ms) |
 | ECG CH1 + CH2 | CH1(impedance)을 CH2와 같은 패킷에 넣음, 둘 다 24-bit, 500 Hz | 6 B | 24 (48 ms) |
 | Temperature | 10 B, 5 s 주기 | - | - |
 | On-device ML 결과 | 20 B 이하, 최대 3회/s (심박마다 1회로 가정) | - | - |
@@ -258,9 +278,11 @@ ECG와 같은 500 Hz로 보내는 경우가 최악의 경우이므로, 위 표�
 | SCG | 23.4개/s | 562.5 / 12 = 46.9개/s |
 | R-peak | 1~3개/s | 1~3개/s |
 | Status | 1개/s | 1개/s |
-| Temperature | - | 0.2개/s |
+| Temperature | 0.2개/s | 0.2개/s |
 | ML 결과 | - | 최대 3개/s |
 | **합계** | **약 38개/s** | **약 75개/s** |
+
+"현재" 열은 SCG 6축을 적용하기 전 값입니다. SCG 6축만 적용한 지금은 약 62개/s입니다(6장).
 | event당 필요 수 (33.3 event/s) | 1.14 | **2.25 → event당 3개 이상 필요** |
 | 가정 전송률 133개/s 대비 사용률 | 29 % | **56 %** |
 
@@ -301,7 +323,8 @@ ECG와 같은 500 Hz로 보내는 경우가 최악의 경우이므로, 위 표�
 - I2C 전송은 인터럽트 방식(`HAL_I2C_Mem_*_IT`)입니다. 전송하는 동안 스레드는 세마포어에서 잠들어 있으므로 CPU를 쓰지 않습니다.
 - I2C1 인터럽트의 우선순위(6)는 ECG DRDY(1), HAL tick(3), IMU INT(4)보다 낮습니다.
 - 온도 스레드는 가장 낮은 우선순위라서 ECG/SCG 수집, 처리, BLE, USB 스레드를 지연시키지 않습니다.
-- 측정 결과는 `ble_temp_queue`를 통해 BLE 스레드로 넘깁니다. I2C1은 온도 스레드만 사용합니다.
+- 측정 결과는 `ble_temp_queue`(BLE 스레드)와 `usb_temp_queue`(USB CDC 스레드) 두 곳으로 보냅니다. I2C1은 온도 스레드만 사용합니다.
+- USB CDC로는 CSV `T` row로 나갑니다(11장).
 - 오류가 나면 아래 순서로 복구합니다.
   1. I2C1을 DeInit합니다.
   2. SCL 클럭을 최대 9번 내보내 SDA가 풀리게 합니다.
@@ -314,6 +337,7 @@ ECG와 같은 500 Hz로 보내는 경우가 최악의 경우이므로, 위 표�
 - 측정: `temp_last_milli_c`, `temp_last_raw`, `temp_valid_count`, `temp_error_count`, `temp_last_status`
 - I2C: `max30205_transfer_ok/error/timeout_count`, `max30205_bus_recovery_count`, `max30205_last_hal_error`
 - BLE: `cardiac_gatt_temp_sent_count`, `cardiac_gatt_temp_init_status`
+- USB: `usb_temp_record_count`, `usb_temp_last_milli_c`, `usb_temp_queue_overflow_count`
 
 ---
 
@@ -333,3 +357,26 @@ Generate 후에는 다음 순서로 확인합니다.
 1. `git status`와 `git diff`로 바뀐 파일을 확인합니다.
 2. 의도하지 않은 파일은 `git checkout -- <파일>`로 되돌립니다.
    - 특히 `Drivers/`는 줄바꿈 문자(LF/CRLF)만 바뀌어 수정된 것으로 표시되는 경우가 있습니다.
+
+---
+
+## 11. USB CDC CSV 출력 (Terminal)
+
+USB CDC(가상 COM 포트)로 연결하면 CSV 헤더를 한 번 보낸 뒤 레코드를 계속 보냅니다. 각 행은 `\r\n`으로 끝납니다.
+`timestamp_us`는 모두 같은 TIM2 1 MHz 기준(64-bit)입니다.
+
+```
+record_type,timestamp_us,sample_counter,v1,v2,v3,v4,v5,v6
+```
+
+| 타입 | 형식 | 내용 |
+|---|---|---|
+| `E` | `E,ts,cnt,ch2,0,0` | ECG CH2 raw (24-bit 부호 확장), 500 Hz |
+| `S` | `S,ts,cnt,ax,ay,az,gx,gy,gz` | Accel XYZ (16384 LSB/g), Gyro XYZ (131 LSB/(°/s)), 562.5 Hz |
+| `R` | `R,ts,cnt,amplitude,rr_us,bpm,confidence_q15,adaptive_threshold` | R-peak 검출 이벤트 |
+| `T` | `T,ts,seq,raw,milli_c,flags` | 온도, 5 s 주기. °C = raw / 256 = milli_c / 1000. flags: bit0 = 유효, bit1 = 센서/I2C 오류. 오류면 raw = milli_c = 0 |
+
+- 행마다 열 수가 다릅니다. 파서는 첫 열(record_type)로 형식을 판단해야 합니다.
+- `T`의 세 번째 열은 sample_counter가 아니라 측정 seq(u16, 오류여도 증가)입니다.
+- `T`의 timestamp는 I2C로 값을 읽은 시점입니다. 실제 변환은 그보다 최대 50 ms 전에 시작됩니다.
+- USB 쓰기 스레드는 ECG 샘플을 기다리며 배치를 만들기 때문에, ECG가 멈추면 `T`와 `S` row도 나가지 않습니다.

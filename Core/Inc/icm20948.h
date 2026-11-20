@@ -27,29 +27,54 @@
 #define ICM20948_CLK_AUTO           0x01
 
 /* User Bank 2 */
+#define ICM20948_REG_GYRO_SMPLRT_DIV       0x00
+#define ICM20948_REG_GYRO_CONFIG_1         0x01
 #define ICM20948_REG_ACCEL_SMPLRT_DIV_1    0x10
 #define ICM20948_REG_ACCEL_SMPLRT_DIV_2    0x11
 #define ICM20948_REG_ACCEL_CONFIG          0x14
 
+/* PWR_MGMT_2: 0x00 = all accelerometer and gyroscope axes enabled */
+#define ICM20948_PWR_MGMT_2_ALL_ON         0x00U
+
 /* SCG configuration */
 #define ICM20948_ACCEL_SMPLRT_DIV_SCG      1U
 
+/*
+ * Gyroscope ODR = 1100 / (1 + divider) = 550 Hz.
+ * The accelerometer runs at 1125 / (1 + 1) = 562.5 Hz. No divider pair gives
+ * the same rate above 25 Hz, so the gyroscope is read together with the
+ * accelerometer on each accelerometer Data Ready: about 2 % of the gyroscope
+ * values are repeated.
+ */
+#define ICM20948_GYRO_SMPLRT_DIV_SCG       1U
+
+/*
+ * Output registers, User Bank 0.
+ * ACCEL_XOUT_H .. ACCEL_ZOUT_L (0x2D..0x32) are followed by
+ * GYRO_XOUT_H .. GYRO_ZOUT_L (0x33..0x38): one 12-byte burst reads both.
+ */
 #define ICM20948_REG_ACCEL_XOUT_H    0x2D
+#define ICM20948_REG_GYRO_XOUT_H     0x33
+#define ICM20948_IMU_DATA_BYTES      12U
 
 /* INT_ENABLE_1 register bit 0 */
 #define ICM20948_RAW_DATA_0_RDY_EN     0x01U
 /* INT_STATUS_1 register bit 0 */
 #define ICM20948_RAW_DATA_0_RDY_INT    0x01U
 
+/* One accelerometer + gyroscope sample, raw signed 16-bit counts */
 typedef struct
 {
-    int16_t x;
-    int16_t y;
-    int16_t z;
-} ICM20948_AccelRaw;
+    int16_t accel_x;
+    int16_t accel_y;
+    int16_t accel_z;
+    int16_t gyro_x;
+    int16_t gyro_y;
+    int16_t gyro_z;
+} ICM20948_ImuRaw;
 
-HAL_StatusTypeDef ICM20948_ReadAccelRaw(
-    ICM20948_AccelRaw *accel);
+HAL_StatusTypeDef ICM20948_ReadImuRaw(
+    ICM20948_ImuRaw *imu);
 
 /*
  * ACCEL_CONFIG
@@ -58,6 +83,15 @@ HAL_StatusTypeDef ICM20948_ReadAccelRaw(
  * FCHOICE = 1: DLPF enabled
  */
 #define ICM20948_ACCEL_CONFIG_SCG          0x09U
+
+/*
+ * GYRO_CONFIG_1
+ * bits [5:3] GYRO_DLPFCFG = 2: approximately 119.5 Hz bandwidth
+ *            (closest to the accelerometer 111 Hz)
+ * bits [2:1] GYRO_FS_SEL  = 0: ±250 dps (131 LSB per dps)
+ * bit  [0]   GYRO_FCHOICE = 1: DLPF enabled
+ */
+#define ICM20948_GYRO_CONFIG_1_SCG         0x11U
 
 HAL_StatusTypeDef ICM20948_Init(void);
 
@@ -71,7 +105,7 @@ HAL_StatusTypeDef ICM20948_SelectBank(uint8_t bank);
 
 HAL_StatusTypeDef ICM20948_ReadWhoAmI(uint8_t *who_am_i);
 
-HAL_StatusTypeDef ICM20948_ConfigureAccelerometerSCG(void);
+HAL_StatusTypeDef ICM20948_ConfigureImuSCG(void);
 
 HAL_StatusTypeDef ICM20948_EnableDataReadyInterrupt(void);
 

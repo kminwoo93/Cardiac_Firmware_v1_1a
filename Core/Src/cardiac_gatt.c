@@ -84,7 +84,14 @@
 /* Header format byte: high nibble = version, low nibble = channel mask */
 #define CARDIAC_STREAM_FORMAT_VERSION      1U
 #define CARDIAC_ECG_CHANNEL_MASK           0x02U   /* CH2 only */
-#define CARDIAC_SCG_AXIS_MASK              0x07U   /* X, Y, Z */
+/*
+ * SCG version 2: 12 bytes per sample, accelerometer XYZ then gyroscope XYZ.
+ * Mask bits 0..2 = accelerometer X, Y, Z; bit 3 = gyroscope X, Y, Z.
+ * (Version 1 was 6 bytes per sample, accelerometer only, mask 0x07.)
+ */
+#define CARDIAC_SCG_FORMAT_VERSION         2U
+#define CARDIAC_SCG_AXIS_MASK              0x0FU
+#define CARDIAC_SCG_BYTES_PER_SAMPLE       12U
 
 
 /* -------------------------------------------------------------------------- */
@@ -177,7 +184,7 @@ typedef struct
 {
     uint32_t counter;
     uint32_t timestamp;
-    int32_t  value[3];
+    int32_t  value[6];
 } Cardiac_StreamSample;
 
 /*
@@ -189,7 +196,8 @@ typedef struct
  *  6  u32  timestamp in us of the first sample (low 32 bits of TIM2)
  * 10  u8   number of samples
  * 11  u8   format: version << 4 | channel mask
- * 12  ...  samples (ECG: int24 per channel, SCG: int16 X, Y, Z)
+ * 12  ...  samples (ECG: int24 per channel,
+ *           SCG: int16 accel X, Y, Z, gyro X, Y, Z)
  *
  * Samples in one packet are consecutive (sample_counter + 1 each).
  */
@@ -482,6 +490,9 @@ static uint8_t Cardiac_GATT_ReadScg(Cardiac_StreamSample *sample)
     sample->value[0] = message.accel_x_raw;
     sample->value[1] = message.accel_y_raw;
     sample->value[2] = message.accel_z_raw;
+    sample->value[3] = message.gyro_x_raw;
+    sample->value[4] = message.gyro_y_raw;
+    sample->value[5] = message.gyro_z_raw;
 
     return 1U;
 }
@@ -498,12 +509,15 @@ static void Cardiac_GATT_PackEcg(uint8_t *dst, const Cardiac_StreamSample *sampl
 }
 
 
-/* SCG: signed 16-bit X, Y, Z */
+/* SCG: signed 16-bit accel X, Y, Z, then gyro X, Y, Z */
 static void Cardiac_GATT_PackScg(uint8_t *dst, const Cardiac_StreamSample *sample)
 {
-    Cardiac_GATT_PutU16(&dst[0], (uint16_t)sample->value[0]);
-    Cardiac_GATT_PutU16(&dst[2], (uint16_t)sample->value[1]);
-    Cardiac_GATT_PutU16(&dst[4], (uint16_t)sample->value[2]);
+    uint32_t axis;
+
+    for (axis = 0U; axis < 6U; axis++)
+    {
+        Cardiac_GATT_PutU16(&dst[axis * 2U], (uint16_t)sample->value[axis]);
+    }
 }
 
 
@@ -531,8 +545,8 @@ static Cardiac_Stream cardiac_scg_stream =
     .error_count = &cardiac_gatt_scg_error_count,
     .gap_count = &cardiac_gatt_scg_gap_count,
     .cccd_bit = CARDIAC_GATT_CCCD_SCG,
-    .bytes_per_sample = 6U,
-    .format = (CARDIAC_STREAM_FORMAT_VERSION << 4) | CARDIAC_SCG_AXIS_MASK,
+    .bytes_per_sample = CARDIAC_SCG_BYTES_PER_SAMPLE,
+    .format = (CARDIAC_SCG_FORMAT_VERSION << 4) | CARDIAC_SCG_AXIS_MASK,
 };
 
 
@@ -738,7 +752,7 @@ static void Cardiac_GATT_UpdateStatus(void)
  *
  * Before the first measurement the value reads as flags = 0.
  */
-static void Cardiac_GATT_BuildTemp(const BLE_TempSample *sample,
+static void Cardiac_GATT_BuildTemp(const Temp_Sample *sample,
                                    uint8_t buffer[CARDIAC_GATT_TEMP_SIZE])
 {
     buffer[0] = CARDIAC_GATT_TEMP_VERSION;
@@ -762,7 +776,7 @@ static void Cardiac_GATT_WriteTempValue(void)
 
 static void Cardiac_GATT_ProcessTemperature(void)
 {
-    BLE_TempSample sample;
+    Temp_Sample sample;
     uint8_t received = 0U;
     uint8_t ret;
     uint32_t count;
