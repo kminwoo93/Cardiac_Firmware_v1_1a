@@ -4,6 +4,7 @@
 
 #include "main.h"
 #include "app_threadx.h"
+#include "cpu_usage.h"
 
 #include "ble_status.h"
 #include "hci_parser.h"
@@ -1015,13 +1016,26 @@ void Cardiac_GATT_Process(void)
         CARDIAC_STATUS_PERIOD_MS)
     {
         cardiac_gatt_last_status_tick = HAL_GetTick();
+        CPU_PROF_BEGIN(CPU_PROF_BLE_STATUS);
         Cardiac_GATT_UpdateStatus();
+        CPU_PROF_END(CPU_PROF_BLE_STATUS);
     }
 
+    CPU_PROF_BEGIN(CPU_PROF_BLE_RPEAK);
     Cardiac_GATT_ProcessRPeaks();
+    CPU_PROF_END(CPU_PROF_BLE_RPEAK);
+
+    CPU_PROF_BEGIN(CPU_PROF_BLE_TEMP);
     Cardiac_GATT_ProcessTemperature();
+    CPU_PROF_END(CPU_PROF_BLE_TEMP);
+
+    CPU_PROF_BEGIN(CPU_PROF_BLE_ECG);
     Cardiac_GATT_StreamProcess(&cardiac_ecg_stream);
+    CPU_PROF_END(CPU_PROF_BLE_ECG);
+
+    CPU_PROF_BEGIN(CPU_PROF_BLE_SCG);
     Cardiac_GATT_StreamProcess(&cardiac_scg_stream);
+    CPU_PROF_END(CPU_PROF_BLE_SCG);
 
     Cardiac_GATT_UpdateNotifyRate();
 }

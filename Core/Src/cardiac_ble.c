@@ -15,6 +15,7 @@
 #include "stm32wb05n_l2cap_aci.h"
 
 #include "tx_api.h"
+#include "cpu_usage.h"
 
 
 /* -------------------------------------------------------------------------- */
@@ -299,10 +300,15 @@ void Cardiac_BLE_Process(void)
      * Process asynchronous HCI/BLE events.
      * Called continuously from the BLE thread.
      */
+    CPU_PROF_BEGIN(CPU_PROF_BLE_HCI_EVENTS);
     hci_user_evt_proc();
+    CPU_PROF_END(CPU_PROF_BLE_HCI_EVENTS);
 
+    CPU_PROF_BEGIN(CPU_PROF_BLE_LINK);
     Cardiac_BLE_LinkProcess();
+    CPU_PROF_END(CPU_PROF_BLE_LINK);
 
+    /* Sections per characteristic inside */
     Cardiac_GATT_Process();
 
     if ((cardiac_ble_restart_adv != 0U) &&

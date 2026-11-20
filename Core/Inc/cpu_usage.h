@@ -42,6 +42,51 @@ typedef struct
   uint32_t    peak_x100;
 } CPU_Usage_Isr;
 
+/*
+ * Code sections measured inside the threads (docs/CPU_PROFILING.md).
+ *
+ * A section is wrapped with CPU_PROF_BEGIN(id) / CPU_PROF_END(id) in thread
+ * code. It is charged only the cycles its thread actually runs between the
+ * two calls: time the thread is blocked (queue wait, sleep, I2C/USB wait on
+ * a semaphore), preempted by another thread, or interrupted by an ISR is
+ * not counted. The thread total in cpu_usage_thread[] still includes it.
+ *
+ * One section per thread at a time: CPU_PROF_BEGIN() closes a section the
+ * same thread left open (for example after a "break" that skipped the END).
+ */
+typedef enum
+{
+  CPU_PROF_ECG_READ = 0,   /* ADS1292R SPI frame read             (ECG acq)  */
+  CPU_PROF_ECG_FILTER,     /* CH2 IIR filter chain                (ECG acq)  */
+  CPU_PROF_ECG_DETECT,     /* Pan-Tompkins R-peak detector        (ECG proc) */
+  CPU_PROF_IMU_READ,       /* ICM-20948 12-byte SPI burst         (SCG acq)  */
+  CPU_PROF_TEMP_MEASURE,   /* MAX30205 one-shot + I2C read        (temp)     */
+  CPU_PROF_USB_CSV_ECG,    /* format one E row                    (USB)      */
+  CPU_PROF_USB_CSV_SCG,    /* format one S row                    (USB)      */
+  CPU_PROF_USB_CSV_RPEAK,  /* format one R row                    (USB)      */
+  CPU_PROF_USB_CSV_TEMP,   /* format one T row                    (USB)      */
+  CPU_PROF_USB_WRITE,      /* ux_device_class_cdc_acm_write()     (USB)      */
+  CPU_PROF_BLE_HCI_EVENTS, /* hci_user_evt_proc()                 (BLE)      */
+  CPU_PROF_BLE_LINK,       /* link setup (MTU, PHY, DLE, params)  (BLE)      */
+  CPU_PROF_BLE_STATUS,     /* Status characteristic, 1 s          (BLE)      */
+  CPU_PROF_BLE_RPEAK,      /* R-peak notifications                (BLE)      */
+  CPU_PROF_BLE_TEMP,       /* Temperature notifications           (BLE)      */
+  CPU_PROF_BLE_ECG,        /* ECG stream packets                  (BLE)      */
+  CPU_PROF_BLE_SCG,        /* SCG stream packets                  (BLE)      */
+  CPU_PROF_COUNT
+} CPU_Prof_Id;
+
+typedef struct
+{
+  const char *name;
+  uint32_t    usage_x100;    /* CPU share in the last 1 s window, 0.01 % */
+  uint32_t    peak_x100;     /* highest usage_x100 since boot / reset */
+  uint32_t    calls_per_s;   /* completed calls in the last window */
+  uint32_t    avg_ns;        /* CPU time per call, last window */
+  uint32_t    max_ns;        /* longest call in the last window */
+  uint32_t    peak_max_ns;   /* longest call since boot / reset */
+} CPU_Prof_Section;
+
 #ifdef TX_ENABLE_EXECUTION_CHANGE_NOTIFY
 
 /* Results (updated once per second) */
@@ -55,6 +100,17 @@ extern volatile uint32_t cpu_usage_isr_total_x100; /* sum of all ISRs */
 extern volatile uint32_t cpu_usage_total_peak_x100;
 extern volatile uint32_t cpu_usage_window_count;   /* increments every window */
 extern volatile uint32_t cpu_usage_reset_peaks;    /* write 1 to clear peaks */
+
+/* Section results (updated once per second, cleared by cpu_usage_reset_peaks) */
+extern volatile CPU_Prof_Section cpu_prof[CPU_PROF_COUNT];
+extern volatile uint32_t cpu_prof_total_x100;      /* sum of all sections */
+
+/* Mark a section in thread code. Ignored in ISRs and before the kernel runs. */
+void CPU_Prof_Begin(CPU_Prof_Id id);
+void CPU_Prof_End(CPU_Prof_Id id);
+
+#define CPU_PROF_BEGIN(id)      CPU_Prof_Begin(id)
+#define CPU_PROF_END(id)        CPU_Prof_End(id)
 
 /* ThreadX execution change hooks (called from the port / ISRs) */
 void _tx_execution_initialize(void);
@@ -74,6 +130,9 @@ void _tx_execution_isr_exit(void);
 
 #define CPU_USAGE_ISR_ENTER()
 #define CPU_USAGE_ISR_EXIT()
+
+#define CPU_PROF_BEGIN(id)
+#define CPU_PROF_END(id)
 
 #endif /* TX_ENABLE_EXECUTION_CHANGE_NOTIFY */
 
