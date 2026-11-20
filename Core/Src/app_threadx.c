@@ -29,6 +29,7 @@
 #include "cardiac_ble.h"
 #include "cardiac_gatt.h"
 #include "max30205.h"
+#include "cpu_usage.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -662,7 +663,9 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		        ecg_irq_timestamp_low =
 		            irq_timestamp.timestamp_low;
 
+		        CPU_PROF_BEGIN(CPU_PROF_ECG_READ);
 		        ADS1292R_ReadData((uint8_t *)ecg_raw);
+		        CPU_PROF_END(CPU_PROF_ECG_READ);
 
 		    	    /*
 		    	     * Valid ADS1292R status starts with 1100.
@@ -689,10 +692,12 @@ void ecg_acquisition_thread_entry(ULONG thread_input)
 		    	         * Process every valid CH2 sample.
 		    	         * Filter coefficients are designed for fs = 500 Hz.
 		    	         */
+		    	        CPU_PROF_BEGIN(CPU_PROF_ECG_FILTER);
 		    	        (void)ADS1292R_ProcessCH2Sample(
 		    	            &ch2_filter,
 		    	            ecg_ch2_raw,
 		    	            &ch2_output);
+		    	        CPU_PROF_END(CPU_PROF_ECG_FILTER);
 
 		    	        /*
 		    	         * Fill one queue message.
@@ -910,6 +915,7 @@ void ecg_processing_thread_entry(ULONG thread_input)
             continue;
         }
         Timestamp_CaptureFromISR(&start_high, &start_low);
+        CPU_PROF_BEGIN(CPU_PROF_ECG_DETECT);
         ecg_processing_input_count++;
         uint32_t bi = input.sample_counter % ECG_PT_BASELINE_WINDOW_SAMPLES;
         baseline_sum += input.ecg_raw - pt_baseline_buffer[bi];
@@ -992,6 +998,7 @@ void ecg_processing_thread_entry(ULONG thread_input)
         previous2_mwi = previous_mwi;
         previous_mwi = mwi;
 
+        CPU_PROF_END(CPU_PROF_ECG_DETECT);
         Timestamp_CaptureFromISR(&end_high, &end_low);
         uint64_t elapsed = (((uint64_t)end_high << 32) | end_low) -
                            (((uint64_t)start_high << 32) | start_low);
@@ -1058,8 +1065,10 @@ void scg_acquisition_thread_entry(ULONG thread_input)
             scg_irq_timestamp_low =
                 irq_timestamp.timestamp_low;
 
+            CPU_PROF_BEGIN(CPU_PROF_IMU_READ);
             scg_spi_last_status =
                 ICM20948_ReadImuRaw(&imu_sample);
+            CPU_PROF_END(CPU_PROF_IMU_READ);
 
             if (scg_spi_last_status == HAL_OK)
             {
@@ -1311,7 +1320,10 @@ void temperature_thread_entry(ULONG thread_input)
 
         if (status == MAX30205_OK)
         {
+            /* The 50 ms conversion sleep is not counted (thread blocked) */
+            CPU_PROF_BEGIN(CPU_PROF_TEMP_MEASURE);
             status = Temperature_Measure(&raw);
+            CPU_PROF_END(CPU_PROF_TEMP_MEASURE);
         }
 
         temp_last_status = (uint8_t)status;

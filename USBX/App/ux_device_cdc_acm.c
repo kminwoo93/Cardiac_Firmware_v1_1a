@@ -26,6 +26,7 @@
 #include "app_threadx.h"
 #include "main.h"
 #include "max30205.h"
+#include "cpu_usage.h"
 #include <stdio.h>
 /* USER CODE END Includes */
 
@@ -396,6 +397,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	             * Convert the 64-bit timestamp without relying on
 	             * snprintf long-long support.
 	             */
+	            CPU_PROF_BEGIN(CPU_PROF_USB_CSV_ECG);
 	            if (USB_UInt64ToDecimal(
 	                    sample.timestamp_us,
 	                    timestamp_text,
@@ -424,6 +426,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	            batch_length += (uint32_t)line_length;
 	            batch_ecg_count++;
 	            batch_record_count++;
+	            CPU_PROF_END(CPU_PROF_USB_CSV_ECG);
 
                 /*
                  * Drain pending detector events without ever blocking the
@@ -439,6 +442,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                     {
                         break;
                     }
+                    CPU_PROF_BEGIN(CPU_PROF_USB_CSV_RPEAK);
                     uint64_t rpeak_timestamp =
                         ((uint64_t)rpeak_event.timestamp_high << 32) |
                         rpeak_event.timestamp_low;
@@ -468,6 +472,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                     }
                     batch_length += (uint32_t)line_length;
                     batch_record_count++;
+                    CPU_PROF_END(CPU_PROF_USB_CSV_RPEAK);
                 }
 
                 /*
@@ -487,6 +492,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                     {
                         break;
                     }
+                    CPU_PROF_BEGIN(CPU_PROF_USB_CSV_TEMP);
                     if (USB_UInt64ToDecimal(
                             ((uint64_t)temp_sample.timestamp_high << 32) |
                             temp_sample.timestamp_low,
@@ -520,6 +526,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
                     batch_record_count++;
                     usb_temp_record_count++;
                     usb_temp_last_milli_c = milli_c;
+                    CPU_PROF_END(CPU_PROF_USB_CSV_TEMP);
                 }
 
 	            /*
@@ -589,6 +596,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                 * Convert the 64-bit timestamp without relying on
 	                 * snprintf long-long support.
 	                 */
+	                CPU_PROF_BEGIN(CPU_PROF_USB_CSV_SCG);
 	                if (USB_UInt64ToDecimal(
 	                        scg_sample.timestamp_us,
 	                        timestamp_text,
@@ -627,6 +635,7 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 	                batch_length += (uint32_t)line_length;
 	                batch_scg_count++;
 	                batch_record_count++;
+	                CPU_PROF_END(CPU_PROF_USB_CSV_SCG);
 	            }
 	        }
 
@@ -655,12 +664,16 @@ VOID usbx_cdc_acm_write_thread_entry(ULONG thread_input)
 
 	        /*
 	         * Send the completed CSV batch with one USB write call.
+	         * The wait for the USB transfer to finish is not counted
+	         * (thread blocked), only the CPU work of the call.
 	         */
+	        CPU_PROF_BEGIN(CPU_PROF_USB_WRITE);
 	        status = ux_device_class_cdc_acm_write(
 	            g_cdc_acm,
 	            usb_batch_buffer,
 	            (ULONG)batch_length,
 	            &actual_length);
+	        CPU_PROF_END(CPU_PROF_USB_WRITE);
 
 
 	        usb_last_write_status = status;
